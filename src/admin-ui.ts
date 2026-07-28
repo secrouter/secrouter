@@ -446,7 +446,11 @@ export const ADMIN_HTML = `<!doctype html>
     var st = {};
     var nameIn = el("input",{type:"text",placeholder:"name (e.g. onprem-vllm)"});
     var urlIn  = el("input",{type:"text",placeholder:"https://llm.internal:8000/v1"});
-    var apiSel = el("select",{}, ["openai","anthropic","bedrock"].map(function(a){return el("option",{value:a,text:a});}));
+    var apiSel = el("select",{}, ["openai","anthropic","bedrock","azure"].map(function(a){return el("option",{value:a,text:a});}));
+    // Azure deployment API needs an api-version + auth mode (shown only for azure).
+    var apiVerIn = el("input",{type:"text",value:"2024-10-21",title:"Azure REST api-version",style:"width:120px;display:none"});
+    var azAuthSel = el("select",{title:"Azure auth mode",style:"display:none"}, [["api-key","api-key"],["entra","entra"]].map(function(a){return el("option",{value:a[0],text:a[1]});}));
+    apiSel.onchange=function(){ var az=apiSel.value==="azure"; apiVerIn.style.display=az?"":"none"; azAuthSel.style.display=az?"":"none"; };
     var authSel= el("select",{}, [["none","no auth"],["env","env var"],["token","one-time token"]].map(function(a){return el("option",{value:a[0],text:a[1]});}));
     var authVal= el("input",{type:"text",placeholder:"",style:"display:none"});
     authSel.onchange=function(){
@@ -512,6 +516,7 @@ export const ADMIN_HTML = `<!doctype html>
       var tiers={}; getChecks(st.tierDiv).forEach(function(t){ if(chatSel[0]) tiers[t]={primary:name+"/"+chatSel[0].id}; });
       var firstEmb=sel.filter(function(r){return r.emb.checked;})[0];
       var prov={ name:name, api:apiSel.value, baseUrl:urlIn.value.trim() };
+      if(apiSel.value==="azure"){ prov.apiVersion=apiVerIn.value.trim()||"2024-10-21"; prov.azureAuth=azAuthSel.value; }
       if(authSel.value==="env" && authVal.value.trim()) prov.authEnvKey=authVal.value.trim();
       return { provider:prov, egress:{ allowedHost:st.hostIn.value.trim(), authorizedClassifications:getChecks(st.classDiv) },
                models:models, tiers:Object.keys(tiers).length?tiers:undefined,
@@ -540,10 +545,14 @@ export const ADMIN_HTML = `<!doctype html>
     }
     function pollHealth(n){ fetch("/health").then(function(r){ if(!r.ok) throw 0; return r.json(); }).then(function(){ toast("back up"); loadConfig().then(function(){shell();}); }).catch(function(){ if(n<30) setTimeout(function(){pollHealth(n+1);},1000); }); }
 
-    wrap.appendChild(el("h3",{text:"Add a local / on-prem endpoint"}));
-    wrap.appendChild(el("div",{class:"row"},[el("label",{text:"Name"}),nameIn,el("label",{text:"API"}),apiSel]));
+    var manualIn=el("input",{type:"text",placeholder:"deployment / model ids, comma-separated",style:"min-width:240px"});
+    function enterManual(){ var ids=manualIn.value.split(",").map(function(s){return s.trim();}).filter(Boolean); if(ids.length) renderPick(ids); else toast("enter comma-separated ids",true); }
+
+    wrap.appendChild(el("h3",{text:"Add a model endpoint"}));
+    wrap.appendChild(el("div",{class:"row"},[el("label",{text:"Name"}),nameIn,el("label",{text:"API"}),apiSel,apiVerIn,azAuthSel]));
     wrap.appendChild(el("div",{class:"row"},[el("label",{text:"Base URL"}),urlIn]));
     wrap.appendChild(el("div",{class:"row"},[el("label",{text:"Auth"}),authSel,authVal,el("button",{class:"btn",text:"Test endpoint",onclick:test})]));
+    wrap.appendChild(el("div",{class:"row"},[el("label",{text:"Or enter models",title:"Skip discovery — for Azure deployments or endpoints without a model list"}),manualIn,el("button",{class:"btn ghost",text:"Enter models",onclick:enterManual})]));
     wrap.appendChild(modelsBox); wrap.appendChild(egressBox);
     return wrap;
   }

@@ -126,6 +126,63 @@ export const MODELS: ModelDef[] = [
     reasoning: true,
   },
 
+  // ═══ OpenAI on Amazon Bedrock — AWS GovCloud (FedRAMP High / IL4-5) ═══
+  // Frontier OpenAI models served through Bedrock's OpenAI-compatible endpoint
+  // ({bedrock-runtime}/openai/v1), so no Anthropic in the DoD supply chain.
+  // Configure a provider with api="openai", baseUrl=".../openai/v1", and a
+  // Bedrock API key. Verify current model ids + rates in the GovCloud console.
+  {
+    id: "bedrock/openai.gpt-oss-120b-1:0",
+    name: "OpenAI gpt-oss-120b (Bedrock GovCloud)",
+    inputPrice: 0.15,
+    outputPrice: 0.6,
+    contextWindow: 128_000,
+    maxOutput: 32_000,
+    reasoning: true,
+    agentic: true,
+  },
+  {
+    id: "bedrock/openai.gpt-oss-20b-1:0",
+    name: "OpenAI gpt-oss-20b (Bedrock GovCloud)",
+    inputPrice: 0.07,
+    outputPrice: 0.3,
+    contextWindow: 128_000,
+    maxOutput: 32_000,
+    agentic: true,
+  },
+
+  // ═══ OpenAI on Azure AI Foundry (Azure OpenAI) ═══
+  // Frontier OpenAI models via Azure deployments (api="azure"). Model id =
+  // your deployment name; these examples assume deployments named for the model.
+  // Available in Azure commercial and Azure Government.
+  {
+    id: "azure/gpt-4o",
+    name: "GPT-4o (Azure AI Foundry)",
+    inputPrice: 2.5,
+    outputPrice: 10,
+    contextWindow: 128_000,
+    maxOutput: 16_384,
+    vision: true,
+    agentic: true,
+  },
+  {
+    id: "azure/gpt-4o-mini",
+    name: "GPT-4o Mini (Azure AI Foundry)",
+    inputPrice: 0.15,
+    outputPrice: 0.6,
+    contextWindow: 128_000,
+    maxOutput: 16_384,
+  },
+  {
+    id: "azure/o4-mini",
+    name: "o4-mini (Azure AI Foundry)",
+    inputPrice: 1.1,
+    outputPrice: 4.4,
+    contextWindow: 200_000,
+    maxOutput: 100_000,
+    reasoning: true,
+  },
+
   // ═══ Google (service account available — add to openclaw.json) ═══
   {
     id: "google/gemini-2.5-pro",

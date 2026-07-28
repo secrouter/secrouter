@@ -10,6 +10,7 @@ import { logger } from "./logger.js";
 import { zeroUsage } from "./security/accounting/usage.js";
 import { checkEgress, EgressDeniedError } from "./security/egress/allowlist.js";
 import { signRequest } from "./security/transport/sigv4.js";
+import { getEntraToken } from "./security/transport/azureEntra.js";
 import type { UsageResult } from "./security/types.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 // --- Timeout Configuration ---
@@ -53,9 +54,13 @@ export class UpstreamError extends Error {
 // Provider configs loaded from openclaw.json
 export type ProviderConfig = {
   baseUrl: string;
-  api: "anthropic-messages" | "openai-completions" | "bedrock-runtime";
+  api: "anthropic-messages" | "openai-completions" | "bedrock-runtime" | "azure-openai";
   headers?: Record<string, string>;
   region?: string;
+  /** Azure OpenAI (api="azure-openai"): REST api-version, auth mode, and Entra config. */
+  apiVersion?: string;
+  azureAuth?: "api-key" | "entra";
+  entra?: { tenantId: string; clientId: string; clientSecretEnv: string; authority?: string; scope?: string };
 };
 
 // OpenAI tool types
@@ -111,6 +116,9 @@ function getProviderConfig(provider: string): ProviderConfig | undefined {
     api: toInternalApiType(entry.api),
     headers: entry.headers,
     region: entry.region,
+    apiVersion: entry.apiVersion,
+    azureAuth: entry.azureAuth,
+    entra: entry.entra,
   };
 }
 
@@ -609,12 +617,29 @@ async function forwardToOpenAI(
   // otherwise per-user accounting would silently record zero for streamed calls.
   if (stream) body.stream_options = { include_usage: true };
 
-  const url = `${config.baseUrl}/chat/completions`;
-  logger.info(`-> ${provider}: ${modelName} (tier=${tier}, stream=${stream})`);
+  // Azure OpenAI puts the deployment in the path + an api-version query; other
+  // OpenAI-compatible endpoints (incl. Bedrock's /openai/v1) use a flat path.
+  const isAzure = config.api === "azure-openai";
+  const url = isAzure
+    ? `${config.baseUrl.replace(/\/+$/, "")}/openai/deployments/${encodeURIComponent(modelName)}/chat/completions?api-version=${config.apiVersion ?? "2024-10-21"}`
+    : `${config.baseUrl}/chat/completions`;
+  logger.info(`-> ${provider}: ${modelName} (tier=${tier}, stream=${stream}${isAzure ? ", azure" : ""})`);
+
+  // Auth: Azure uses the `api-key` header or an Entra bearer token; everything
+  // else (OpenAI, vLLM/Ollama, Bedrock's /openai/v1) uses `Authorization: Bearer`.
+  let authHeaders: Record<string, string> = {};
+  if (isAzure && config.azureAuth === "entra") {
+    if (!config.entra) throw new Error(`Azure provider '${provider}' uses azureAuth="entra" but has no entra config`);
+    authHeaders = { Authorization: `Bearer ${await getEntraToken(provider, config.entra)}` };
+  } else if (isAzure) {
+    if (auth?.apiKey) authHeaders = { "api-key": auth.apiKey };
+  } else if (auth?.apiKey) {
+    authHeaders = { Authorization: `Bearer ${auth.apiKey}` };
+  }
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    ...(auth?.apiKey ? { Authorization: `Bearer ${auth.apiKey}` } : {}),
+    ...authHeaders,
     ...(traceparent ? { traceparent } : {}),
     ...config.headers,
   };
@@ -986,15 +1011,27 @@ export async function forwardEmbeddingsRequest(
     }
   }
 
-  if (providerConfig.api !== "openai-completions") {
+  const isAzure = providerConfig.api === "azure-openai";
+  if (providerConfig.api !== "openai-completions" && !isAzure) {
     throw new Error(`Embeddings are only supported on OpenAI-compatible providers for now (got '${providerConfig.api}')`);
   }
 
   const auth = getAuth(provider);
-  const url = `${providerConfig.baseUrl}/embeddings`;
+  const url = isAzure
+    ? `${providerConfig.baseUrl.replace(/\/+$/, "")}/openai/deployments/${encodeURIComponent(model)}/embeddings?api-version=${providerConfig.apiVersion ?? "2024-10-21"}`
+    : `${providerConfig.baseUrl}/embeddings`;
+  let authHeaders: Record<string, string> = {};
+  if (isAzure && providerConfig.azureAuth === "entra") {
+    if (!providerConfig.entra) throw new Error(`Azure provider '${provider}' uses azureAuth="entra" but has no entra config`);
+    authHeaders = { Authorization: `Bearer ${await getEntraToken(provider, providerConfig.entra)}` };
+  } else if (isAzure) {
+    if (auth?.apiKey) authHeaders = { "api-key": auth.apiKey };
+  } else if (auth?.apiKey) {
+    authHeaders = { Authorization: `Bearer ${auth.apiKey}` };
+  }
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    ...(auth?.apiKey ? { Authorization: `Bearer ${auth.apiKey}` } : {}),
+    ...authHeaders,
     ...(traceparent ? { traceparent } : {}),
     ...providerConfig.headers,
   };
