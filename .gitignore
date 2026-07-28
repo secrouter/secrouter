@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+.playwright-mcp/
+# runtime data + local secrets (never commit)
+*.db
+*.db-wal
+*.db-shm
+deploy/secrets.env

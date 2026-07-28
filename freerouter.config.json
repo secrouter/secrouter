@@ -1,0 +1,39 @@
+{
+  "port": 18800,
+  "host": "127.0.0.1",
+  "providers": {
+    "anthropic": {
+      "baseUrl": "https://api.anthropic.com",
+      "api": "anthropic"
+    }
+  },
+  "tiers": {
+    "SIMPLE":    { "primary": "anthropic/claude-haiku-4-5", "fallback": ["anthropic/claude-sonnet-4-5"] },
+    "MEDIUM":    { "primary": "anthropic/claude-sonnet-4-5", "fallback": ["anthropic/claude-opus-4-6"] },
+    "COMPLEX":   { "primary": "anthropic/claude-opus-4-6", "fallback": ["anthropic/claude-sonnet-4-5"] },
+    "REASONING": { "primary": "anthropic/claude-opus-4-6", "fallback": ["anthropic/claude-sonnet-4-5"] }
+  },
+  "agenticTiers": {
+    "SIMPLE":    { "primary": "anthropic/claude-haiku-4-5", "fallback": ["anthropic/claude-sonnet-4-5"] },
+    "MEDIUM":    { "primary": "anthropic/claude-sonnet-4-5", "fallback": ["anthropic/claude-opus-4-6"] },
+    "COMPLEX":   { "primary": "anthropic/claude-opus-4-6", "fallback": ["anthropic/claude-sonnet-4-5"] },
+    "REASONING": { "primary": "anthropic/claude-opus-4-6", "fallback": ["anthropic/claude-sonnet-4-5"] }
+  },
+  "tierBoundaries": {
+    "simpleMedium": 0.0,
+    "mediumComplex": 0.03,
+    "complexReasoning": 0.15
+  },
+  "thinking": {
+    "adaptive": ["claude-opus-4-6", "claude-opus-4.6"],
+    "enabled": { "models": ["claude-sonnet-4-5"], "budget": 4096 }
+  },
+  "auth": {
+    "default": "openclaw",
+    "openclaw": {
+      "type": "openclaw",
+      "profilesPath": "~/.openclaw/agents/main/agent/auth-profiles.json"
+    }
+  },
+  "_comment": "DEV config — security disabled, NOT for CUI. Kimi/Moonshot (PRC) removed. For a CMMC/CUI deployment use freerouter.config.hardened.example.json (OIDC auth, per-user quotas, Bedrock GovCloud + self-hosted egress allow-list, FIPS, hash-chained audit)."
+}

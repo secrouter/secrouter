@@ -1,0 +1,27 @@
+# Non-container deployment unit. Install to /etc/systemd/system/secrouter.service.
+# Build first:  npm ci && npm run build   (artifact: dist/server.js)
+[Unit]
+Description=SecRouter LLM gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/node /opt/secrouter/dist/server.js
+Environment=FREEROUTER_CONFIG=/etc/secrouter/config.json
+EnvironmentFile=/etc/secrouter/secrets.env
+User=secrouter
+Group=secrouter
+# Hardening (CM 3.4.6/3.4.7)
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/secrouter
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallFilter=@system-service
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
