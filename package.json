@@ -1,0 +1,27 @@
+{
+  "name": "freerouter",
+  "version": "1.0.0",
+  "description": "Free, self-hosted AI model router — smart routing with your own API keys (OpenRouter alternative)",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "node dist/server.js",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run test:security && npm run test:integration",
+    "test:security": "for f in sigv4 oidc policy egress endpoints metrics; do npx tsx test/security/$f.test.ts || exit 1; done",
+    "test:integration": "for f in e2e admin; do npx tsx test/security/$f.test.ts || exit 1; done"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@types/node": "^25.2.3",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "jose": "^6.2.3"
+  }
+}

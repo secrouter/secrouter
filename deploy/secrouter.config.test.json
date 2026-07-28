@@ -1,0 +1,72 @@
+{
+  "_README": "TEST-DEPLOYMENT config for docker-compose.test.yml. Secured, but wired to the mock IdP + mock model — NOT for CUI. requireFips is off and TLS is left to the (absent) front end. For production start from ../freerouter.config.hardened.example.json.",
+
+  "port": 18800,
+  "host": "0.0.0.0",
+
+  "providers": {
+    "local": {
+      "api": "openai",
+      "baseUrl": "http://mock-llm:8080/v1",
+      "auth": { "type": "env", "key": "LOCAL_LLM_API_KEY" }
+    }
+  },
+
+  "tiers": {
+    "SIMPLE":    { "primary": "local/mock-model", "fallback": [] },
+    "MEDIUM":    { "primary": "local/mock-model", "fallback": [] },
+    "COMPLEX":   { "primary": "local/mock-model", "fallback": [] },
+    "REASONING": { "primary": "local/mock-model", "fallback": [] }
+  },
+
+  "models": [{ "id": "local/mock-embed", "name": "Mock Embed", "inputPrice": 1, "outputPrice": 0, "kind": "embedding" }],
+  "embeddings": { "default": "local/mock-embed" },
+
+  "auth": { "default": "openclaw", "openclaw": { "type": "openclaw", "profilesPath": "/etc/secrouter/upstream-auth.json" } },
+
+  "security": {
+    "enabled": true,
+    "requireFips": false,
+    "storePath": "/var/lib/secrouter/secrouter.db",
+    "cors": { "allowedOrigins": [] },
+
+    "oidc": {
+      "issuer": "http://localhost:8081",
+      "audience": "secrouter",
+      "jwksUri": "http://mock-oidc:8080/jwks",
+      "algorithms": ["RS256"],
+      "groupsClaim": "groups",
+      "requireMfa": true,
+      "clientId": "secrouter-admin-console",
+      "scopes": "openid profile email groups"
+    },
+
+    "classification": { "default": "CUI", "levels": ["UNCLASSIFIED", "CUI"] },
+
+    "egress": {
+      "failClosed": true,
+      "allowlist": [
+        { "provider": "local", "allowedHost": "mock-llm:8080", "authorizedClassifications": ["UNCLASSIFIED", "CUI"], "authorization": "TEST mock model (not a real CUI endpoint)" }
+      ]
+    },
+
+    "policy": {
+      "default": {
+        "allowedTiers": ["SIMPLE", "MEDIUM"],
+        "onViolation": "downgrade",
+        "maxClassification": "CUI",
+        "budgets": [{ "window": "minute", "maxRequests": 60 }, { "window": "day", "maxCostUsd": 100 }]
+      },
+      "groups": {
+        "secrouter-power-users": { "allowedTiers": ["SIMPLE", "MEDIUM", "COMPLEX", "REASONING"], "allowedTools": ["mock/echo", "mock/add"] },
+        "secrouter-admins": { "admin": true, "allowedTiers": ["SIMPLE", "MEDIUM", "COMPLEX", "REASONING"] }
+      }
+    },
+
+    "audit": { "sink": "sqlite", "failClosed": true },
+    "metrics": { "enabled": true, "bearerEnvKey": "SECROUTER_METRICS_TOKEN" },
+    "resilience": { "circuitThreshold": 3, "cooldownSec": 10, "healthIntervalSec": 0 },
+    "mcp": { "enabled": true, "servers": [{ "name": "mock", "url": "http://mock-mcp:8080/mcp", "authorizedClassifications": ["UNCLASSIFIED", "CUI"], "authorization": "TEST mock MCP server (echo/add/now)" }] },
+    "tls": { "mode": "frontend" }
+  }
+}

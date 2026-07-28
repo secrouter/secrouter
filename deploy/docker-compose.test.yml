@@ -1,0 +1,60 @@
+# SecRouter TEST stack — secured router + mock IdP + mock model.
+# From this directory:  docker compose -f docker-compose.test.yml up --build
+# Then:                 ./smoke-test.sh         (or open http://localhost:18800/admin)
+name: secrouter-test
+
+services:
+  mock-oidc:
+    image: node:24-slim
+    command: node /srv/mock-oidc/server.mjs
+    environment:
+      PORT: "8080"
+      EXTERNAL_ISSUER: "http://localhost:8081" # browser-facing; used as `iss` + in discovery
+      AUDIENCE: "secrouter"
+    volumes:
+      - ./mock-oidc:/srv/mock-oidc:ro
+    ports:
+      - "8081:8080"
+
+  mock-llm:
+    image: node:24-slim
+    command: node /srv/mock-llm/server.mjs
+    environment:
+      PORT: "8080"
+    volumes:
+      - ./mock-llm:/srv/mock-llm:ro
+
+  mock-mcp:
+    image: node:24-slim
+    command: node /srv/mock-mcp/server.mjs
+    environment:
+      PORT: "8080"
+    volumes:
+      - ./mock-mcp:/srv/mock-mcp:ro
+
+  secrouter:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped # so the admin "Restart" button brings the service back
+    # The live config lives on the writable volume (seeded once from the read-only
+    # template) so the admin "add endpoint" tooling can rewrite it atomically and
+    # the change survives a restart. A read-only single-file mount would block the
+    # writer; `rm` the secrouter-data volume to reset to the template.
+    entrypoint: ["sh", "-c", "cp -n /etc/secrouter/config.template.json /var/lib/secrouter/config.json; exec node dist/server.js"]
+    environment:
+      FREEROUTER_CONFIG: /var/lib/secrouter/config.json
+      CLAWROUTER_PORT: "18800"
+      CLAWROUTER_HOST: "0.0.0.0"
+      LOCAL_LLM_API_KEY: "test-key" # mock model ignores it; satisfies the env-auth provider
+    volumes:
+      - ./secrouter.config.test.json:/etc/secrouter/config.template.json:ro
+      - secrouter-data:/var/lib/secrouter # writable: live config + node:sqlite store (audit + usage ledger)
+    ports:
+      - "18800:18800"
+    depends_on:
+      - mock-oidc
+      - mock-llm
+
+volumes:
+  secrouter-data:

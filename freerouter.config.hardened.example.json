@@ -1,0 +1,143 @@
+{
+  "_README": "CMMC Level 3 (NIST SP 800-171 R2 + 800-172) reference configuration for SecRouter handling CUI. Copy, then replace every <PLACEHOLDER>. Validated at startup — the server refuses to boot (fail-closed) if this block is invalid. See docs/compliance/.",
+
+  "port": 18800,
+  "host": "127.0.0.1",
+
+  "providers": {
+    "bedrock": {
+      "api": "bedrock",
+      "region": "us-gov-west-1",
+      "baseUrl": "https://bedrock-runtime.us-gov-west-1.amazonaws.com"
+    },
+    "local": {
+      "api": "openai",
+      "baseUrl": "https://llm.internal.example.mil/v1",
+      "auth": { "type": "env", "key": "LOCAL_LLM_API_KEY" }
+    }
+  },
+
+  "tiers": {
+    "SIMPLE":    { "primary": "local/llama-3.3-70b-instruct", "fallback": ["bedrock/anthropic.claude-3-5-haiku-20241022-v1:0"] },
+    "MEDIUM":    { "primary": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0", "fallback": [] },
+    "COMPLEX":   { "primary": "bedrock/anthropic.claude-opus-4-20250514-v1:0", "fallback": ["bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0"] },
+    "REASONING": { "primary": "bedrock/anthropic.claude-opus-4-20250514-v1:0", "fallback": [] }
+  },
+
+  "thinking": {
+    "adaptive": ["claude-opus-4", "claude-opus-4-6"],
+    "enabled": { "models": ["claude-3-5-sonnet"], "budget": 4096 }
+  },
+
+  "auth": { "default": "openclaw", "openclaw": { "type": "openclaw", "profilesPath": "~/.config/secrouter/upstream-auth.json" } },
+
+  "security": {
+    "enabled": true,
+    "requireFips": true,
+    "storePath": "/var/lib/secrouter/secrouter.db",
+
+    "cors": { "allowedOrigins": [] },
+
+    "oidc": {
+      "issuer": "https://idp.example.mil/realms/cui",
+      "audience": "secrouter",
+      "jwksUri": "https://idp.example.mil/realms/cui/protocol/openid-connect/certs",
+      "algorithms": ["RS256", "ES256"],
+      "groupsClaim": "groups",
+      "rolesClaim": "realm_access.roles",
+      "clockToleranceSec": 60,
+      "requireMfa": true,
+      "mfaAmrValues": ["mfa", "otp", "hwk", "pop", "sc"],
+      "requiredAcr": "https://refeds.org/profile/mfa",
+      "_trackJti_note": "Leave OFF for standard OIDC access tokens (they are multi-use bearer tokens). Setting trackJti:true enforces SINGLE-USE per jti and will reject the 2nd request that reuses a token — only enable if your IdP issues one-time tokens.",
+      "jwksCacheTtlSec": 600,
+      "clientId": "secrouter-admin-console",
+      "scopes": "openid profile email groups"
+    },
+
+    "classification": { "default": "CUI", "levels": ["UNCLASSIFIED", "CUI", "CUI//SP-PRVCY"] },
+
+    "egress": {
+      "failClosed": true,
+      "allowlist": [
+        {
+          "provider": "bedrock",
+          "allowedHost": "bedrock-runtime.us-gov-west-1.amazonaws.com",
+          "authorizedClassifications": ["UNCLASSIFIED", "CUI", "CUI//SP-PRVCY"],
+          "authorization": "Claude via Amazon Bedrock, AWS GovCloud (US) — FedRAMP High / DoD IL4-5"
+        },
+        {
+          "provider": "local",
+          "allowedHost": "llm.internal.example.mil",
+          "authorizedClassifications": ["UNCLASSIFIED", "CUI", "CUI//SP-PRVCY"],
+          "authorization": "Self-hosted model inside the accreditation boundary"
+        }
+      ]
+    },
+
+    "policy": {
+      "default": {
+        "allowedTiers": ["SIMPLE", "MEDIUM"],
+        "onViolation": "downgrade",
+        "maxClassification": "CUI",
+        "budgets": [
+          { "window": "minute", "maxRequests": 60 },
+          { "window": "day", "maxCostUsd": 25 }
+        ]
+      },
+      "groups": {
+        "secrouter-power-users": {
+          "allowedTiers": ["SIMPLE", "MEDIUM", "COMPLEX", "REASONING"],
+          "budgets": [{ "window": "day", "maxCostUsd": 200 }]
+        },
+        "secrouter-admins": { "admin": true },
+        "cui-privacy-cleared": { "maxClassification": "CUI//SP-PRVCY" }
+      },
+      "users": {
+        "svc-batch-pipeline@example.mil": {
+          "allowedModels": ["bedrock/anthropic.claude-3-5-haiku-20241022-v1:0"],
+          "budgets": [{ "window": "day", "maxCostUsd": 50 }]
+        }
+      }
+    },
+
+    "audit": {
+      "sink": "both",
+      "failClosed": true,
+      "syslog": { "host": "siem.internal.example.mil", "port": 6514, "protocol": "tcp", "format": "cef" }
+    },
+
+    "metrics": {
+      "_comment": "Prometheus /metrics (bounded labels — no principal ids). Off unless enabled; protect with a static bearer resolved from bearerEnvKey and/or network placement, since scrapers can't do OIDC.",
+      "enabled": true,
+      "bearerEnvKey": "SECROUTER_METRICS_TOKEN"
+    },
+
+    "resilience": {
+      "_comment": "Per-provider circuit breaker (SC availability). Opens after circuitThreshold consecutive upstream health failures so a dead provider fails fast to the next authorized model; a half-open probe is admitted after cooldownSec. healthIntervalSec>0 enables active model-list health checks (adds background egress; leave 0 for air-gapped enclaves).",
+      "circuitThreshold": 5,
+      "cooldownSec": 30,
+      "healthIntervalSec": 0
+    },
+
+    "mcp": {
+      "_comment": "Governed MCP / tool-calling gateway (AC 3.1.3/3.1.5). Off unless enabled. Servers are in-boundary upstreams SecRouter brokers; tools are deny-by-default per principal via policy.allowedTools (server/tool, server/* wildcard). Every tools/call is classification-gated + audited (tool.call/tool.deny, args hashed not stored).",
+      "enabled": false,
+      "servers": [
+        {
+          "name": "docs-search",
+          "url": "http://mcp.internal.example.mil:9000/mcp",
+          "authorizedClassifications": ["UNCLASSIFIED", "CUI"],
+          "authEnvKey": "MCP_DOCS_SEARCH_TOKEN",
+          "authorization": "In-boundary retrieval service"
+        }
+      ]
+    },
+
+    "tls": {
+      "_comment": "Recommended: terminate TLS + mTLS/CAC at a FIPS-validated front end and set mode=frontend (this app binds localhost). Use mode=native only on a Node build linked against a CMVP-validated OpenSSL FIPS provider.",
+      "mode": "frontend",
+      "minVersion": "TLSv1.2"
+    }
+  }
+}
