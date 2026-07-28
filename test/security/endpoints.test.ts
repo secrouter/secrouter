@@ -70,6 +70,16 @@ applyEndpointToConfig(ecfg, {
 ok("embedding model kind persisted", ecfg.models?.[0]?.kind === "embedding");
 ok("embeddings default set in config", ecfg.embeddings?.default === "vec/text-embed");
 
+// azure: api-version + auth mode flow into the provider config
+const azcfg = { providers: {}, tiers: {}, security: { enabled: true, egress: { allowlist: [] } } } as unknown as FreeRouterConfig;
+applyEndpointToConfig(azcfg, {
+  provider: { name: "azure", api: "azure", baseUrl: "https://r.openai.azure.us", apiVersion: "2025-01-01", azureAuth: "entra", authEnvKey: "AZ_KEY" },
+  egress: { authorizedClassifications: ["CUI"] },
+  models: [{ id: "azure/gpt-4o", inputPrice: 2.5, outputPrice: 10 }],
+});
+ok("azure provider api persisted", azcfg.providers.azure?.api === "azure");
+ok("azure apiVersion + azureAuth persisted", azcfg.providers.azure?.apiVersion === "2025-01-01" && azcfg.providers.azure?.azureAuth === "entra");
+
 console.log("\nProbe model-list discovery:");
 {
   const calls: string[] = [];

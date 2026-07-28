@@ -24,7 +24,7 @@ import {
 } from "../config.js";
 import type { EgressRule } from "./types.js";
 
-export type ApiType = "openai" | "anthropic" | "bedrock";
+export type ApiType = "openai" | "anthropic" | "bedrock" | "azure";
 
 /** Probe input. A typed `authToken` is used for the probe only and never stored. */
 export type ProbeRequest = {
@@ -45,7 +45,7 @@ export type ProbeResult = {
 
 /** The full endpoint registration the wizard assembles and submits. */
 export type EndpointSpec = {
-  provider: { name: string; api: ApiType; baseUrl: string; authEnvKey?: string; region?: string };
+  provider: { name: string; api: ApiType; baseUrl: string; authEnvKey?: string; region?: string; apiVersion?: string; azureAuth?: "api-key" | "entra" };
   egress: { allowedHost?: string; authorizedClassifications: string[]; authorization?: string };
   models: ModelCatalogEntry[];
   /** Optional tier → {primary,fallback} assignments to route to the new models. */
@@ -184,6 +184,8 @@ export function applyEndpointToConfig(cfg: FreeRouterConfig, spec: EndpointSpec)
   cfg.providers ??= {};
   const prov: ProviderConfigEntry = { baseUrl: spec.provider.baseUrl, api: spec.provider.api };
   if (spec.provider.region) prov.region = spec.provider.region;
+  if (spec.provider.apiVersion) prov.apiVersion = spec.provider.apiVersion;
+  if (spec.provider.azureAuth) prov.azureAuth = spec.provider.azureAuth;
   if (spec.provider.authEnvKey) prov.auth = { type: "env", key: spec.provider.authEnvKey };
   cfg.providers[spec.provider.name] = prov;
 

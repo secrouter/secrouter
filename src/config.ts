@@ -27,11 +27,26 @@ export type AuthConfig = {
 
 export type ProviderConfigEntry = {
   baseUrl: string;
-  api: "anthropic" | "openai" | "bedrock";
+  api: "anthropic" | "openai" | "bedrock" | "azure";
   headers?: Record<string, string>;
   auth?: AuthConfig;
   /** AWS region for api="bedrock" (e.g. "us-gov-west-1"). */
   region?: string;
+  /** Azure OpenAI REST api-version (api="azure"). Default "2024-10-21". */
+  apiVersion?: string;
+  /** Azure auth mode (api="azure"): "api-key" header (default) or "entra" bearer token. */
+  azureAuth?: "api-key" | "entra";
+  /** Microsoft Entra ID service principal, used when azureAuth="entra". */
+  entra?: {
+    tenantId: string;
+    clientId: string;
+    /** Env var holding the client secret — never stored in config. */
+    clientSecretEnv: string;
+    /** OAuth authority base. Default commercial; use login.microsoftonline.us for Azure Government. */
+    authority?: string;
+    /** Token scope. Default https://cognitiveservices.azure.com/.default (…azure.us for Gov). */
+    scope?: string;
+  };
 };
 
 export type TierMapping = {
@@ -376,10 +391,11 @@ export function getSanitizedConfig(): Record<string, unknown> {
  * Convert config api type to internal provider api type.
  */
 export function toInternalApiType(
-  api: "anthropic" | "openai" | "bedrock",
-): "anthropic-messages" | "openai-completions" | "bedrock-runtime" {
+  api: "anthropic" | "openai" | "bedrock" | "azure",
+): "anthropic-messages" | "openai-completions" | "bedrock-runtime" | "azure-openai" {
   if (api === "anthropic") return "anthropic-messages";
   if (api === "bedrock") return "bedrock-runtime";
+  if (api === "azure") return "azure-openai";
   return "openai-completions";
 }
 
@@ -428,7 +444,18 @@ export function isSecurityEnabled(): boolean {
 export function validateSecurityConfig(cfg: FreeRouterConfig = getConfig()): string[] {
   const sec = cfg.security;
   const errors: string[] = [];
-  if (!sec || sec.enabled !== true) return errors; // disabled → nothing to validate
+
+  // Provider sanity — runs regardless of security.enabled (fail-closed on misconfig).
+  for (const [name, p] of Object.entries(cfg.providers ?? {})) {
+    if (p.api === "azure") {
+      if (!p.baseUrl) errors.push(`provider '${name}' (azure) requires baseUrl (the Azure resource endpoint)`);
+      if (p.azureAuth === "entra" && (!p.entra?.tenantId || !p.entra?.clientId || !p.entra?.clientSecretEnv)) {
+        errors.push(`provider '${name}' azureAuth="entra" requires entra.tenantId, entra.clientId, and entra.clientSecretEnv`);
+      }
+    }
+  }
+
+  if (!sec || sec.enabled !== true) return errors; // disabled → only provider sanity above
 
   // Identity (Feature 1) — OIDC is the only configured mechanism.
   if (!sec.oidc) {

@@ -6,9 +6,18 @@
 
   "providers": {
     "bedrock": {
-      "api": "bedrock",
-      "region": "us-gov-west-1",
-      "baseUrl": "https://bedrock-runtime.us-gov-west-1.amazonaws.com"
+      "_comment": "Frontier OpenAI models on Amazon Bedrock (GovCloud) via the OpenAI-compatible endpoint. Auth with a Bedrock API key (bearer) in AWS_BEARER_TOKEN_BEDROCK.",
+      "api": "openai",
+      "baseUrl": "https://bedrock-runtime.us-gov-west-1.amazonaws.com/openai/v1",
+      "auth": { "type": "env", "key": "AWS_BEARER_TOKEN_BEDROCK" }
+    },
+    "azure": {
+      "_comment": "Azure AI Foundry (Azure OpenAI). baseUrl = your resource endpoint (…openai.azure.us for Azure Government). Model id = your deployment name. Auth: api-key (AZURE_OPENAI_API_KEY) or set azureAuth:\"entra\" with an entra block { tenantId, clientId, clientSecretEnv, authority:\"https://login.microsoftonline.us\", scope:\"https://cognitiveservices.azure.us/.default\" }.",
+      "api": "azure",
+      "baseUrl": "https://<resource>.openai.azure.us",
+      "apiVersion": "2024-10-21",
+      "azureAuth": "api-key",
+      "auth": { "type": "env", "key": "AZURE_OPENAI_API_KEY" }
     },
     "local": {
       "api": "openai",
@@ -17,16 +26,18 @@
     }
   },
 
+  "_switching_note": "Bedrock and Azure both speak the OpenAI chat format, so switching a tier between clouds is a one-line change: flip the primary/fallback between bedrock/openai.* and azure/<deployment> (and keep both egress rules below).",
+
   "tiers": {
-    "SIMPLE":    { "primary": "local/llama-3.3-70b-instruct", "fallback": ["bedrock/anthropic.claude-3-5-haiku-20241022-v1:0"] },
-    "MEDIUM":    { "primary": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0", "fallback": [] },
-    "COMPLEX":   { "primary": "bedrock/anthropic.claude-opus-4-20250514-v1:0", "fallback": ["bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0"] },
-    "REASONING": { "primary": "bedrock/anthropic.claude-opus-4-20250514-v1:0", "fallback": [] }
+    "SIMPLE":    { "primary": "bedrock/openai.gpt-oss-20b-1:0", "fallback": ["local/llama-3.3-70b-instruct"] },
+    "MEDIUM":    { "primary": "bedrock/openai.gpt-oss-120b-1:0", "fallback": ["azure/gpt-4o"] },
+    "COMPLEX":   { "primary": "bedrock/openai.gpt-oss-120b-1:0", "fallback": ["azure/gpt-4o"] },
+    "REASONING": { "primary": "bedrock/openai.gpt-oss-120b-1:0", "fallback": ["azure/o4-mini"] }
   },
 
   "thinking": {
-    "adaptive": ["claude-opus-4", "claude-opus-4-6"],
-    "enabled": { "models": ["claude-3-5-sonnet"], "budget": 4096 }
+    "adaptive": [],
+    "enabled": { "models": [], "budget": 0 }
   },
 
   "auth": { "default": "openclaw", "openclaw": { "type": "openclaw", "profilesPath": "~/.config/secrouter/upstream-auth.json" } },
@@ -64,7 +75,13 @@
           "provider": "bedrock",
           "allowedHost": "bedrock-runtime.us-gov-west-1.amazonaws.com",
           "authorizedClassifications": ["UNCLASSIFIED", "CUI", "CUI//SP-PRVCY"],
-          "authorization": "Claude via Amazon Bedrock, AWS GovCloud (US) — FedRAMP High / DoD IL4-5"
+          "authorization": "Frontier OpenAI models via Amazon Bedrock, AWS GovCloud (US) — FedRAMP High / DoD IL4-5"
+        },
+        {
+          "provider": "azure",
+          "allowedHost": "<resource>.openai.azure.us",
+          "authorizedClassifications": ["UNCLASSIFIED", "CUI", "CUI//SP-PRVCY"],
+          "authorization": "Azure OpenAI / AI Foundry in Azure Government — FedRAMP High / DoD IL4-5"
         },
         {
           "provider": "local",
@@ -95,7 +112,7 @@
       },
       "users": {
         "svc-batch-pipeline@example.mil": {
-          "allowedModels": ["bedrock/anthropic.claude-3-5-haiku-20241022-v1:0"],
+          "allowedModels": ["bedrock/openai.gpt-oss-20b-1:0"],
           "budgets": [{ "window": "day", "maxCostUsd": 50 }]
         }
       }
