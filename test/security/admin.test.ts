@@ -45,7 +45,7 @@ async function main() {
     port: PORT, host: "127.0.0.1",
     providers: { local: { baseUrl: "https://llm.internal/v1", api: "openai" } },
     tiers: { SIMPLE: tier, MEDIUM: tier, COMPLEX: tier, REASONING: tier },
-    auth: { default: "openclaw", openclaw: { type: "openclaw", profilesPath: join(dir, "noauth.json") } },
+    auth: { default: "profiles", profiles: { type: "profiles", profilesPath: join(dir, "noauth.json") } },
     security: {
       enabled: true, storePath: join(dir, "store.db"),
       oidc: { issuer: ISS, audience: AUD, jwksUri: `http://127.0.0.1:${oidcPort}/jwks`, groupsClaim: "groups", clientId: "secrouter-admin-console" },

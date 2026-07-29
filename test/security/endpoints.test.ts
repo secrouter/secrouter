@@ -109,7 +109,7 @@ const base = {
   host: "127.0.0.1",
   providers: { local: { api: "openai", baseUrl: "http://llm.internal:8000/v1" } },
   tiers: { SIMPLE: { primary: "local/x", fallback: [] } },
-  auth: { default: "openclaw" },
+  auth: { default: "profiles" },
   security: {
     enabled: true,
     oidc: { issuer: "https://idp.internal", audience: "secrouter" },

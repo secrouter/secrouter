@@ -35,7 +35,7 @@ writeFileSync(
     host: "127.0.0.1",
     providers: { local: { baseUrl: "http://x.internal:1/v1", api: "openai" } },
     tiers: { SIMPLE: { primary: "local/x", fallback: [] }, MEDIUM: { primary: "local/x", fallback: [] }, COMPLEX: { primary: "local/x", fallback: [] }, REASONING: { primary: "local/x", fallback: [] } },
-    auth: { default: "openclaw", openclaw: { type: "openclaw", profilesPath: join(dir, "auth.json") } },
+    auth: { default: "profiles", profiles: { type: "profiles", profilesPath: join(dir, "auth.json") } },
     security: {
       enabled: true,
       storePath: join(dir, "store.db"),

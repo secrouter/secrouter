@@ -1,29 +1,34 @@
 {
   "$schema": "https://openclaw.ai/schemas/plugin-security.json",
   "version": "1.0",
-  "plugin": "@blockrun/clawrouter",
-  "description": "Smart LLM router with x402 micropayments - legitimately requires wallet key for payment signing",
+  "plugin": "secrouter",
+  "description": "Self-hosted secure AI gateway client — forwards an OIDC bearer token to the operator-configured SecRouter endpoint for authentication.",
   "expectedBehaviors": [
     {
+      "type": "network-access",
+      "host": "operator-configured",
+      "purpose": "Forward OpenAI-compatible requests to your self-hosted SecRouter gateway",
+      "justification": "SecRouter is self-hosted. The plugin sends requests only to the gateway URL you configure; that gateway enforces authentication, per-user policy, deny-by-default egress, and audit. No third-party endpoint is contacted by the plugin.",
+      "dataFlow": "to-configured-endpoint",
+      "networkTransmission": true
+    },
+    {
       "type": "env-access",
-      "variable": "BLOCKRUN_WALLET_KEY",
-      "purpose": "x402 payment signing",
-      "justification": "ClawRouter uses this wallet key to sign USDC payment transactions on Base L2. The key is used LOCALLY for cryptographic signing and is NEVER transmitted over the network. This is required for x402 protocol compliance.",
-      "dataFlow": "local-only",
-      "networkTransmission": false
+      "variable": "SECROUTER_TOKEN",
+      "purpose": "OIDC authentication to the gateway",
+      "justification": "The bearer token — a short-lived OIDC JWT issued by your IdP — authenticates the request to your SecRouter gateway. It is sent only to the configured endpoint, over TLS.",
+      "dataFlow": "to-configured-endpoint",
+      "networkTransmission": true
     }
   ],
   "securityNotes": [
-    "The wallet key is used solely for EIP-712 signature generation",
-    "Signatures are transmitted, not the private key itself",
-    "Users fund their own wallets - ClawRouter does not custody funds",
-    "All payment signing happens client-side in the proxy",
-    "Source code is MIT licensed and fully auditable"
+    "No wallet, funds, or cryptocurrency of any kind — the x402 payment layer of the upstream fork was removed entirely.",
+    "The gateway is self-hosted; prompts and data stay within the operator's boundary and its approved providers.",
+    "Requests carry a standard OIDC bearer token; the gateway enforces deny-by-default egress, per-user policy, and hash-chained audit.",
+    "Apache 2.0 licensed and fully auditable."
   ],
   "references": [
-    "https://x402.org - x402 payment protocol specification",
-    "https://eips.ethereum.org/EIPS/eip-712 - EIP-712 typed data signing",
-    "https://blockrun.ai/docs - BlockRun API documentation",
-    "https://github.com/BlockRunAI/ClawRouter - Source code (MIT licensed)"
+    "https://github.com/secrouter/secrouter - Source code (Apache 2.0)",
+    "https://secrouter.io - Documentation"
   ]
 }

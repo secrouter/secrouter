@@ -1,5 +1,5 @@
 /**
- * ClawRouter Proxy Server
+ * SecRouter Proxy Server
  *
  * OpenAI-compatible HTTP server that classifies incoming requests
  * using the 14-dimension weighted scorer and routes to the best backend.
@@ -435,7 +435,7 @@ async function handleEmbeddings(req: IncomingMessage, res: ServerResponse, ctx: 
   }
 
   stats.requests++;
-  res.setHeader("X-ClawRouter-Model", model);
+  res.setHeader("X-SecRouter-Model", model);
   const eProvider = model.split("/")[0];
   // Fail fast if this provider's circuit is open — embeddings have no fallback chain.
   const eGate = breaker.admit(eProvider);
@@ -569,7 +569,7 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
   let tier: string;
   let reasoning: string;
 
-  if (requestedModel === "auto" || requestedModel === "clawrouter/auto" || requestedModel === "blockrun/auto") {
+  if (requestedModel === "auto" || requestedModel === "secrouter/auto") {
     // Check for user mode override (e.g., "max mode: ...", "/complex ...", "[reasoning] ...")
     const modeOverride = detectModeOverride(prompt);
     
@@ -666,9 +666,9 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
   stats.byModel[routedModel] = (stats.byModel[routedModel] ?? 0) + 1;
 
   // Add routing info headers
-  res.setHeader("X-ClawRouter-Model", routedModel);
-  res.setHeader("X-ClawRouter-Tier", tier);
-  res.setHeader("X-ClawRouter-Reasoning", reasoning.slice(0, 200));
+  res.setHeader("X-SecRouter-Model", routedModel);
+  res.setHeader("X-SecRouter-Tier", tier);
+  res.setHeader("X-SecRouter-Reasoning", reasoning.slice(0, 200));
 
   // Per-request accountability: tie principal → tier → final model (AU 3.3.2).
   if (ctx.principal && securityEnabled()) {
@@ -717,7 +717,7 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
     try {
       if (modelToTry !== routedModel) {
         logger.info(`[${stats.requests}] Falling back to ${modelToTry}`);
-        res.setHeader("X-ClawRouter-Model", modelToTry);
+        res.setHeader("X-SecRouter-Model", modelToTry);
       }
       attempted = true;
       const usage = await forwardRequest(chatReq, modelToTry, tier, res, stream, requestClassification, ctx.traceparent);

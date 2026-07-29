@@ -1,5 +1,5 @@
 /**
- * ClawRouter Config — loads external configuration from freerouter.config.json
+ * SecRouter Config — loads external configuration from freerouter.config.json
  * Zero external deps. Falls back to hardcoded defaults if no config file exists.
  *
  * Config file search order:
@@ -17,9 +17,9 @@ import type { SecurityConfig } from "./security/types.js";
 // ─── Config Types ───
 
 export type AuthConfig = {
-  type: "openclaw" | "env" | "file" | "keychain";
+  type: "profiles" | "env" | "file" | "keychain";
   key?: string;           // env var name for type=env
-  profilesPath?: string;  // for type=openclaw
+  profilesPath?: string;  // for type=profiles
   filePath?: string;      // for type=file
   service?: string;       // for type=keychain
   account?: string;       // for type=keychain
@@ -111,37 +111,38 @@ export type FreeRouterConfig = {
 const DEFAULT_CONFIG: FreeRouterConfig = {
   port: 18800,
   host: "127.0.0.1",
-  // NOTE: built-in dev defaults (security disabled). Kimi/Moonshot is
-  // intentionally NOT a default — it is a PRC-jurisdiction provider and must
-  // never receive CUI. The hardened CUI config re-points these to Bedrock
-  // GovCloud + self-hosted models. See freerouter.config.hardened.example.json.
+  // NOTE: built-in dev defaults (security disabled), pointed at OpenAI frontier
+  // models (gpt-oss) on AWS Bedrock GovCloud. Kimi/Moonshot is intentionally NOT
+  // a default — it is a PRC-jurisdiction provider and must never receive CUI. See
+  // freerouter.config.hardened.example.json for the full CUI-hardened config.
   providers: {
-    anthropic: {
-      baseUrl: "https://api.anthropic.com",
-      api: "anthropic",
+    bedrock: {
+      baseUrl: "https://bedrock-runtime.us-gov-west-1.amazonaws.com/openai/v1",
+      api: "openai",
+      region: "us-gov-west-1",
     },
   },
   tiers: {
-    SIMPLE:    { primary: "anthropic/claude-haiku-4-5", fallback: ["anthropic/claude-sonnet-4-5"] },
-    MEDIUM:    { primary: "anthropic/claude-sonnet-4-5", fallback: ["anthropic/claude-opus-4-6"] },
-    COMPLEX:   { primary: "anthropic/claude-opus-4-6", fallback: ["anthropic/claude-sonnet-4-5"] },
-    REASONING: { primary: "anthropic/claude-opus-4-6", fallback: ["anthropic/claude-sonnet-4-5"] },
+    SIMPLE:    { primary: "bedrock/openai.gpt-oss-20b-1:0",  fallback: ["bedrock/openai.gpt-oss-120b-1:0"] },
+    MEDIUM:    { primary: "bedrock/openai.gpt-oss-120b-1:0", fallback: [] },
+    COMPLEX:   { primary: "bedrock/openai.gpt-oss-120b-1:0", fallback: [] },
+    REASONING: { primary: "bedrock/openai.gpt-oss-120b-1:0", fallback: [] },
   },
   agenticTiers: {
-    SIMPLE:    { primary: "anthropic/claude-haiku-4-5", fallback: ["anthropic/claude-sonnet-4-5"] },
-    MEDIUM:    { primary: "anthropic/claude-sonnet-4-5", fallback: ["anthropic/claude-opus-4-6"] },
-    COMPLEX:   { primary: "anthropic/claude-opus-4-6", fallback: ["anthropic/claude-sonnet-4-5"] },
-    REASONING: { primary: "anthropic/claude-opus-4-6", fallback: ["anthropic/claude-sonnet-4-5"] },
+    SIMPLE:    { primary: "bedrock/openai.gpt-oss-20b-1:0",  fallback: ["bedrock/openai.gpt-oss-120b-1:0"] },
+    MEDIUM:    { primary: "bedrock/openai.gpt-oss-120b-1:0", fallback: [] },
+    COMPLEX:   { primary: "bedrock/openai.gpt-oss-120b-1:0", fallback: [] },
+    REASONING: { primary: "bedrock/openai.gpt-oss-120b-1:0", fallback: [] },
   },
   thinking: {
-    adaptive: ["claude-opus-4-6", "claude-opus-4.6"],
-    enabled: { models: ["claude-sonnet-4-5"], budget: 4096 },
+    adaptive: [],
+    enabled: { models: [], budget: 4096 },
   },
   auth: {
-    default: "openclaw",
-    openclaw: {
-      type: "openclaw",
-      profilesPath: "~/.openclaw/agents/main/agent/auth-profiles.json",
+    default: "profiles",
+    profiles: {
+      type: "profiles",
+      profilesPath: "~/.config/secrouter/upstream-auth.json",
     },
   },
 };

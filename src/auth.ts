@@ -1,6 +1,6 @@
 /**
- * ClawRouter Auth — loads API keys from OpenClaw auth-profiles.json
- * Zero-dep, reads from ~/.openclaw/agents/main/agent/auth-profiles.json
+ * SecRouter Auth — loads upstream provider API keys from a profiles file.
+ * Zero-dep, reads from ~/.config/secrouter/upstream-auth.json by default.
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -12,8 +12,8 @@ import { logger } from "./logger.js";
 export type ProviderAuth = {
   provider: string;
   profileName: string;
-  token?: string;   // Anthropic OAuth token
-  apiKey?: string;   // API key (Kimi, OpenAI)
+  token?: string;   // OAuth bearer token
+  apiKey?: string;   // API key
 };
 
 type AuthProfilesFile = {
@@ -39,7 +39,7 @@ function loadAuthProfiles(): Map<string, ProviderAuth> {
     const p = defaultAuth.profilesPath;
     filePath = p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
   } else {
-    filePath = join(homedir(), ".openclaw", "agents", "main", "agent", "auth-profiles.json");
+    filePath = join(homedir(), ".config", "secrouter", "upstream-auth.json");
   }
   try {
     const raw = readFileSync(filePath, "utf-8");
@@ -68,7 +68,7 @@ function loadAuthProfiles(): Map<string, ProviderAuth> {
     logger.info(`Loaded auth for providers: ${[...map.keys()].join(", ")}`);
     return map;
   } catch (err) {
-    logger.error("Failed to load auth-profiles.json:", err);
+    logger.error("Failed to load upstream auth profiles:", err);
     return new Map();
   }
 }
@@ -118,7 +118,7 @@ export function getAuthHeader(provider: string): string | undefined {
   if (!auth) return undefined;
 
   if (auth.token) {
-    // Anthropic uses x-api-key header, not Authorization
+    // token providers return the raw bearer token
     return auth.token;
   }
   if (auth.apiKey) {

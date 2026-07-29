@@ -1,6 +1,6 @@
 /**
  * Smart Router Entry Point
- * Forked from ClawRouter (MIT License). No payment dependencies.
+ * Derived from an MIT-licensed upstream router (see NOTICE). No payment layer.
  *
  * Classifies requests and routes to the best model from YOUR configured providers.
  * 100% local — rules-based scoring handles all requests in <1ms.

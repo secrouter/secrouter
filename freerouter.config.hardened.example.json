@@ -40,7 +40,7 @@
     "enabled": { "models": [], "budget": 0 }
   },
 
-  "auth": { "default": "openclaw", "openclaw": { "type": "openclaw", "profilesPath": "~/.config/secrouter/upstream-auth.json" } },
+  "auth": { "default": "profiles", "profiles": { "type": "profiles", "profilesPath": "~/.config/secrouter/upstream-auth.json" } },
 
   "security": {
     "enabled": true,

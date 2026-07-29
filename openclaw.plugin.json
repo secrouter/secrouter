@@ -1,25 +1,25 @@
 {
-  "id": "clawrouter",
-  "name": "ClawRouter",
-  "description": "Smart LLM router — 30+ models, x402 micropayments, 78% cost savings",
+  "id": "secrouter",
+  "name": "SecRouter",
+  "description": "Self-hosted secure AI gateway — OIDC-authenticated, policy-governed, cost-tracked, audited. OpenAI-compatible; routes to the cheapest capable model across AWS Bedrock GovCloud, Azure OpenAI, and self-hosted providers.",
   "configSchema": {
     "type": "object",
     "properties": {
-      "walletKey": {
+      "baseUrl": {
         "type": "string",
-        "description": "EVM wallet private key (0x...). Optional — auto-generated if not set."
+        "description": "URL of your self-hosted SecRouter gateway (e.g. https://secrouter.internal.example.mil)."
       },
-      "routing": {
-        "type": "object",
-        "description": "Override default routing configuration"
+      "token": {
+        "type": "string",
+        "description": "OIDC bearer token (JWT) from your IdP, forwarded to the gateway for authentication."
       }
     }
   },
   "uiHints": {
-    "walletKey": {
-      "label": "Wallet Private Key",
+    "token": {
+      "label": "OIDC Bearer Token",
       "sensitive": true,
-      "placeholder": "0x... (optional — auto-generated)"
+      "placeholder": "eyJ... (short-lived JWT from your IdP)"
     }
   }
 }

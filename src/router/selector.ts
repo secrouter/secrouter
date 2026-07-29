@@ -1,6 +1,6 @@
 /**
  * Tier → Model Selection
- * Forked from ClawRouter (MIT License). No payment dependencies.
+ * Derived from an MIT-licensed upstream router (see NOTICE). No payment layer.
  *
  * Maps a classification tier to the best model from configured providers.
  * Builds RoutingDecision metadata with cost estimates and savings.
