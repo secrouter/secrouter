@@ -74,7 +74,7 @@ async function main() {
         bedrock: { api: "openai", baseUrl: "https://bedrock-runtime.us-gov-west-1.amazonaws.com/openai/v1", auth: { type: "env", key: "BR_KEY" } },
       },
       tiers: { SIMPLE: { primary: "azurekey/gpt-4o", fallback: [] }, MEDIUM: { primary: "azurekey/gpt-4o", fallback: [] }, COMPLEX: { primary: "azurekey/gpt-4o", fallback: [] }, REASONING: { primary: "azurekey/gpt-4o", fallback: [] } },
-      auth: { default: "openclaw", openclaw: { type: "openclaw", profilesPath: join(dir, "auth.json") } },
+      auth: { default: "profiles", profiles: { type: "profiles", profilesPath: join(dir, "auth.json") } },
     }),
   );
   writeFileSync(join(dir, "auth.json"), JSON.stringify({ version: 1, profiles: {}, lastGood: {} }));

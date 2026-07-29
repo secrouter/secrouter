@@ -1,6 +1,6 @@
 /**
  * Rule-Based Classifier (v2 — Weighted Scoring)
- * Forked from ClawRouter (MIT License). No payment dependencies.
+ * Derived from an MIT-licensed upstream router (see NOTICE). No payment layer.
  *
  * Scores a request across 14 weighted dimensions and maps the aggregate
  * score to a tier using configurable boundaries. Confidence is calibrated

@@ -7,7 +7,7 @@ How to deploy SecRouter so it processes CUI within a CMMC Level 3 boundary. Pair
 ```
  CAC/PIV or SSO              FIPS-validated front end                 SecRouter                 Authorized upstreams
  ───────────────►  mTLS / OIDC login  ──►  TLS term + reverse proxy ──►  :18800 (localhost) ──►  Bedrock GovCloud (FedRAMP High/IL4-5)
-   user / OpenClaw        (Apache+SSSD,        passes Bearer JWT          OIDC verify, policy,    Self-hosted vLLM/TGI (in boundary)
+   user / client          (Apache+SSSD,        passes Bearer JWT          OIDC verify, policy,    Self-hosted vLLM/TGI (in boundary)
                           oauth2-proxy,        + X-Forwarded-For          quotas, egress gate,        ▲
                           or API gateway)                                 hash-chained audit          └ deny-by-default; nothing else reachable
 ```
@@ -96,12 +96,12 @@ podman run --read-only -v secrouter-data:/var/lib/secrouter:Z \
 
 Terminate TLS/mTLS at a FIPS‑validated front end; forward to `127.0.0.1:18800`, passing the Bearer JWT and `X-Forwarded-For` (SecRouter trusts XFF only when `tls.mode="frontend"`). With CAC/PIV, terminate the client cert at the proxy and exchange it for an OIDC token (token‑broker pattern), or have the proxy assert identity into a JWT your IdP signs.
 
-## 7. Client integration (OpenClaw / CLI)
+## 7. Client integration (CLI / SDK)
 
 Machine clients use the OIDC **client‑credentials** grant (no separate API key system):
 
 ```jsonc
-// openclaw.json
+// client config (OpenAI-compatible)
 {
   "providers": { "secrouter": { "baseUrl": "https://secrouter.example.mil", "api": "openai-completions",
     "headers": { "Authorization": "Bearer ${SECROUTER_TOKEN}" }, "models": [{ "id": "auto" }] } },

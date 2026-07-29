@@ -1,6 +1,6 @@
 /**
- * Smart Router Types — Forked from ClawRouter (MIT License)
- * Stripped of x402/BlockRun payment layer.
+ * Smart Router Types — derived from an MIT-licensed upstream router (see NOTICE).
+ * No payment layer.
  *
  * Four classification tiers — REASONING is distinct from COMPLEX because
  * reasoning tasks need different models (o3, deepseek-reasoner) than general

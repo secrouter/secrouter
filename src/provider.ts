@@ -1,5 +1,5 @@
 /**
- * ClawRouter Provider â€” handles forwarding to backend APIs
+ * SecRouter Provider — handles forwarding to backend APIs
  * Supports: Anthropic Messages API, OpenAI-compatible (Kimi, OpenAI)
  * Zero external deps â€” uses native fetch + streams.
  */
@@ -51,7 +51,7 @@ export class UpstreamError extends Error {
 }
 
 
-// Provider configs loaded from openclaw.json
+// Provider configs loaded from freerouter.config.json
 export type ProviderConfig = {
   baseUrl: string;
   api: "anthropic-messages" | "openai-completions" | "bedrock-runtime" | "azure-openai";
@@ -426,7 +426,7 @@ async function forwardToAnthropic(
       id: `chatcmpl-${Date.now()}`,
       object: "chat.completion",
       created: Math.floor(Date.now() / 1000),
-      model: `clawrouter/${modelName}`,
+      model: `secrouter/${modelName}`,
       choices: [{ index: 0, message, finish_reason: finishReason }],
       usage: {
         prompt_tokens: data.usage?.input_tokens ?? 0,
@@ -473,7 +473,7 @@ async function forwardToAnthropic(
     id: `chatcmpl-${Date.now()}`,
     object: "chat.completion.chunk",
     created: Math.floor(Date.now() / 1000),
-    model: `clawrouter/${modelName}`,
+    model: `secrouter/${modelName}`,
     choices: [{ index: 0, delta, finish_reason: finish }],
   });
 
@@ -684,7 +684,7 @@ async function forwardToOpenAI(
       usage.outputTokens = u.completion_tokens ?? 0;
       usage.cacheReadTokens = u.prompt_tokens_details?.cached_tokens ?? 0;
     }
-    if (data.model) data.model = `clawrouter/${modelName}`;
+    if (data.model) data.model = `secrouter/${modelName}`;
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(data));
     return usage;
@@ -724,7 +724,7 @@ async function forwardToOpenAI(
               usage.cacheReadTokens =
                 chunk.usage.prompt_tokens_details?.cached_tokens ?? usage.cacheReadTokens;
             }
-            if (chunk.model) chunk.model = `clawrouter/${modelName}`;
+            if (chunk.model) chunk.model = `secrouter/${modelName}`;
             res.write(`data: ${JSON.stringify(chunk)}\n\n`);
           } catch {
             res.write(line + "\n");
@@ -895,7 +895,7 @@ async function forwardToBedrock(
   }
 
   const data = (await response.json()) as Parameters<typeof buildOpenAIFromAnthropic>[0];
-  const { response: openai, usage } = buildOpenAIFromAnthropic(data, `clawrouter/${modelName}`, provider, modelName);
+  const { response: openai, usage } = buildOpenAIFromAnthropic(data, `secrouter/${modelName}`, provider, modelName);
 
   if (!stream) {
     res.writeHead(200, { "Content-Type": "application/json" });

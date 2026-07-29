@@ -147,7 +147,7 @@ async function main() {
       tiers: { SIMPLE: tier, MEDIUM: tier, COMPLEX: tier, REASONING: tier },
       models: [{ id: "local/mock-embed", name: "Mock Embed", inputPrice: 100, outputPrice: 0, kind: "embedding" }],
       embeddings: { default: "local/mock-embed" },
-      auth: { default: "openclaw", openclaw: { type: "openclaw", profilesPath: authPath } },
+      auth: { default: "profiles", profiles: { type: "profiles", profilesPath: authPath } },
       security: {
         enabled: true,
         storePath: join(dir, "store.db"),

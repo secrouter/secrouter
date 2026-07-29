@@ -1,17 +1,17 @@
 /**
- * Model Definitions — Direct API (No BlockRun/x402)
+ * Model Definitions — Direct API (no payment layer)
  *
  * Maps YOUR provider models with pricing for the cost calculator.
- * These match the models configured in your openclaw.json.
+ * These match the models configured in your freerouter.config.json.
  *
  * Pricing is in USD per 1M tokens.
- * Add/remove models as you add providers to openclaw.json.
+ * Add/remove models as you add providers to freerouter.config.json.
  */
 
 import { getConfig } from "./config.js";
 
 export type ModelDef = {
-  /** OpenClaw model ID: "provider/model-id" */
+  /** Model ID: "provider/model-id" */
   id: string;
   name: string;
   inputPrice: number;   // $/1M input tokens
@@ -88,7 +88,7 @@ export const MODELS: ModelDef[] = [
     agentic: true,
   },
 
-  // ═══ OpenAI (API key available — add to openclaw.json) ═══
+  // ═══ OpenAI (API key available — add to freerouter.config.json) ═══
   {
     id: "openai/gpt-4o",
     name: "GPT-4o",
@@ -183,7 +183,7 @@ export const MODELS: ModelDef[] = [
     reasoning: true,
   },
 
-  // ═══ Google (service account available — add to openclaw.json) ═══
+  // ═══ Google (service account available — add to freerouter.config.json) ═══
   {
     id: "google/gemini-2.5-pro",
     name: "Gemini 2.5 Pro",

@@ -1,8 +1,9 @@
 /**
- * ClawRouter — Direct API Edition
- * Forked from BlockRunAI/ClawRouter (MIT License).
+ * SecRouter — secure, self-hosted AI gateway.
+ * Derived from an MIT-licensed upstream router (see NOTICE); the payment layer
+ * was removed and a security & governance control plane added.
  *
- * Smart 14-dimension weighted routing WITHOUT x402/BlockRun/wallet.
+ * Smart 14-dimension weighted routing to the cheapest capable model.
  * Routes to YOUR configured providers using YOUR API keys.
  *
  * Usage:

@@ -2,14 +2,14 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/spaceProbe/secrouter_web/main/assets/logo-dark.png" />
-    <img src="https://raw.githubusercontent.com/spaceProbe/secrouter_web/main/assets/logo.png" alt="SecRouter — Secure AI API Router" width="525" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/secrouter/secrouter_web/main/assets/logo-dark.png" />
+    <img src="https://raw.githubusercontent.com/secrouter/secrouter_web/main/assets/logo.png" alt="SecRouter — Secure AI API Router" width="525" />
   </picture>
 </p>
 
 **Put every AI request under your control.** SecRouter is a self-hosted gateway that sits in front of your LLMs and adds the two things enterprises actually need before they can say yes to AI: **governance** (who can use which model, with a full audit trail and data that never leaves the boundary) and **cost control** (per-user token & dollar tracking, budgets, and smart routing to the cheapest capable model).
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![CMMC](https://img.shields.io/badge/CMMC-Level%203%20ready-4f6a2e)](docs/compliance/cmmc-control-matrix.md)
 [![OpenAI-compatible](https://img.shields.io/badge/API-OpenAI--compatible-444)](#endpoints)
 
@@ -28,7 +28,7 @@ SecRouter closes both gaps in one drop-in, OpenAI-compatible gateway you host yo
 ### 🔒 Secure AI use
 - **SSO / OIDC authentication** — every request carries a validated JWT from your IdP (Keycloak, Okta, Entra, Ping). LDAP/AD groups arrive as claims; MFA (`amr`/`acr`) is enforced. **Deny-by-default** on every route but `/health`.
 - **Per-user access policy** — control which tiers and models each group/user may reach; lock down individual accounts below the org default.
-- **Deny-by-default egress + data-residency gate** — only authorized destinations are reachable (e.g. **Claude on AWS Bedrock GovCloud** — FedRAMP High / IL4-5 — or self-hosted models inside your boundary). A classification gate refuses to send data to anywhere it isn't cleared for.
+- **Deny-by-default egress + data-residency gate** — only authorized destinations are reachable (e.g. **OpenAI frontier models (gpt-oss) on AWS Bedrock GovCloud** — FedRAMP High / IL4-5 — **Azure OpenAI**, or self-hosted models inside your boundary). A classification gate refuses to send data to anywhere it isn't cleared for.
 - **Tamper-evident audit** — structured, **hash-chained**, CUI-safe (metadata-only) log of every auth, authorization, routing, and usage event, with optional syslog/SIEM forwarding.
 - **Built for regulated environments** — mapped to **NIST SP 800-171 R2 + 800-172 (CMMC Level 3)**; FIPS fail-closed startup; FIPS cipher policy.
 
@@ -39,7 +39,14 @@ SecRouter closes both gaps in one drop-in, OpenAI-compatible gateway you host yo
 - **Live cost visibility** — `GET /v1/usage` (self) and `GET /admin/usage` (admin), plus a web console.
 
 ### 🖥️ Admin console (`/admin`)
-A dependency-free web UI (OIDC PKCE login) to **monitor** per-user/model/day usage & cost, **configure** group/user policies and tier→model routing (audited, applied live), **add local / on-prem model endpoints** with a guided wizard (test → discover models → price → set egress → validate → write the config file → reload/restart), and **review** the audit trail. [Light & dark themes.](#)
+A dependency-free web UI (OIDC PKCE login) to **monitor** per-user/model/day usage & cost, **configure** group/user policies and tier→model routing (audited, applied live), **add local / on-prem model endpoints** with a guided wizard (test → discover models → price → set egress → validate → write the config file → reload/restart), **review** the audit trail, watch **provider health**, and export **compliance evidence**. [Light & dark themes.](#)
+
+### 🔭 Operate & prove
+- **Painless provider switching** — OpenAI-on-Bedrock (GovCloud) and Azure OpenAI both speak the OpenAI API, so moving a tier between clouds is a one-line target change. Credentials are handled per-provider: Bedrock API key / SigV4, Azure `api-key` **or** Microsoft Entra.
+- **Observability** — Prometheus `/metrics` (auth, routing, tokens, cost, circuit state) and W3C `traceparent` propagation across the pipeline.
+- **Provider health & failover** — a per-provider circuit breaker trips on upstream faults and fails over within the tier; live state on the console.
+- **Governed embeddings & tool-calling** — `POST /v1/embeddings` and an OpenAI-compatible **MCP** tool gateway (`POST /mcp`, deny-by-default tool allow-list) run under the same auth, policy, egress, and audit controls.
+- **Assessor-ready evidence** — verify the hash-chained audit in one call; export a one-click evidence bundle (config baseline, FIPS/TLS posture, control self-assessment).
 
 > **Backward compatible.** Security is gated by `security.enabled` — off by default, so out of the box SecRouter behaves like a plain dev router (with a loud warning). Turn it on for any real deployment.
 
@@ -49,8 +56,8 @@ A dependency-free web UI (OIDC PKCE login) to **monitor** per-user/model/day usa
                     ┌──────────────── hash-chained audit ────────────────┐
                     │                                                     │
 client ──TLS──▶ [1] AuthN ──▶ [2] AuthZ ──▶ classifier ──▶ [3] egress gate ──▶ authorized model
-   (SSO/JWT)      OIDC         policy +          route          deny-by-default     (Bedrock GovCloud
-                              quota check                        + data residency    or self-hosted)
+   (SSO/JWT)      OIDC         policy +          route          deny-by-default    (OpenAI on Bedrock
+                              quota check                        + data residency    / Azure / self-hosted)
                                     │                                  │
                                     └────── usage & cost ◀── token accounting
 ```
@@ -58,7 +65,7 @@ client ──TLS──▶ [1] AuthN ──▶ [2] AuthZ ──▶ classifier ─
 ## Quick start (dev)
 
 ```bash
-git clone https://github.com/spaceProbe/secrouter.git
+git clone https://github.com/secrouter/secrouter.git
 cd secrouter
 npm install
 npm run build            # → dist/server.js
@@ -89,11 +96,11 @@ See [`deploy/README.md`](deploy/README.md) for the runbook and the path to produ
 
 Start from the hardened reference config and the hardening guide:
 
-- [`freerouter.config.hardened.example.json`](freerouter.config.hardened.example.json) — full CMMC L3 config (OIDC, per-user policy/quotas, Bedrock GovCloud + self-hosted egress allow-list, FIPS, audit).
+- [`freerouter.config.hardened.example.json`](freerouter.config.hardened.example.json) — full CMMC L3 config (OIDC, per-user policy/quotas, **OpenAI-on-Bedrock GovCloud + Azure OpenAI + self-hosted** egress allow-list, FIPS, audit).
 - [Deployment hardening guide](docs/compliance/deployment-hardening.md) · [CMMC control matrix](docs/compliance/cmmc-control-matrix.md).
 
 ```bash
-npm run test:security      # 36 assertions: OIDC, policy/quota, egress, SigV4
+npm run test:security      # OIDC, policy/quota, egress, SigV4, metrics, resilience, Azure, MCP
 npm run test:integration   # full secured pipeline + admin API (e2e)
 ```
 
@@ -104,18 +111,26 @@ Config is loaded from, in order: `FREEROUTER_CONFIG` env var → `./freerouter.c
 ```jsonc
 {
   "providers": {
-    "bedrock": { "api": "bedrock", "region": "us-gov-west-1", "baseUrl": "https://bedrock-runtime.us-gov-west-1.amazonaws.com" },
+    // OpenAI frontier models on AWS Bedrock GovCloud (OpenAI-compatible endpoint)
+    "bedrock": { "api": "openai", "region": "us-gov-west-1",
+                 "baseUrl": "https://bedrock-runtime.us-gov-west-1.amazonaws.com/openai/v1" },
+    // Azure AI Foundry (OpenAI) — api-key or Microsoft Entra; switch a tier by changing its target
+    "azure":   { "api": "azure", "baseUrl": "https://my-aoai.openai.azure.com", "azureAuth": "entra" },
     "local":   { "api": "openai", "baseUrl": "https://llm.internal.example.mil/v1" }
   },
   "tiers": {
-    "SIMPLE":    { "primary": "local/llama-3.3-70b-instruct" },
-    "MEDIUM":    { "primary": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0" },
-    "COMPLEX":   { "primary": "bedrock/anthropic.claude-opus-4-20250514-v1:0" }
+    "SIMPLE":    { "primary": "bedrock/openai.gpt-oss-20b-1:0",  "fallback": ["local/llama-3.3-70b-instruct"] },
+    "MEDIUM":    { "primary": "bedrock/openai.gpt-oss-120b-1:0", "fallback": ["azure/gpt-4o"] },
+    "COMPLEX":   { "primary": "bedrock/openai.gpt-oss-120b-1:0", "fallback": ["azure/gpt-4o"] },
+    "REASONING": { "primary": "bedrock/openai.gpt-oss-120b-1:0", "fallback": ["azure/o4-mini"] }
   },
   "security": {
     "enabled": true,
     "oidc":   { "issuer": "https://idp.example.mil/realms/cui", "audience": "secrouter", "requireMfa": true },
-    "egress": { "allowlist": [ { "provider": "bedrock", "allowedHost": "bedrock-runtime.us-gov-west-1.amazonaws.com", "authorizedClassifications": ["CUI"] } ] },
+    "egress": { "allowlist": [
+      { "provider": "bedrock", "allowedHost": "bedrock-runtime.us-gov-west-1.amazonaws.com", "authorizedClassifications": ["CUI"] },
+      { "provider": "azure",   "allowedHost": "my-aoai.openai.azure.com",                    "authorizedClassifications": ["CUI"] }
+    ] },
     "policy": { "default": { "allowedTiers": ["SIMPLE","MEDIUM"], "budgets": [{ "window": "day", "maxCostUsd": 25 }] } }
   }
 }
@@ -126,11 +141,17 @@ Config is loaded from, in order: `FREEROUTER_CONFIG` env var → `./freerouter.c
 | Endpoint | Auth | Description |
 |---|---|---|
 | `POST /v1/chat/completions` | user | Route & forward (OpenAI-compatible) |
+| `POST /v1/embeddings` | user | Governed embeddings (OpenAI-compatible) |
+| `POST /mcp` | user | Governed MCP tool gateway — deny-by-default tool allow-list |
 | `GET /v1/models` | user | List configured models |
 | `GET /v1/usage` | user | Your own token/cost usage |
 | `GET /health` | open | Liveness probe |
+| `GET /metrics` | config | Prometheus metrics (enable via `security.metrics`) |
 | `GET /admin` | open shell | Admin web console (OIDC PKCE login) |
 | `GET /admin/usage` · `/admin/api/*` | admin | Org usage + policy/model config |
+| `GET /admin/api/health` | admin | Provider health / circuit-breaker state |
+| `GET /admin/api/audit/verify` | admin | Verify hash-chained audit integrity |
+| `GET /admin/api/evidence` | admin | One-click compliance evidence bundle |
 | `GET /stats` · `/config` · `POST /reload` · `/reload-config` | admin | Ops |
 
 ## Smart routing & overrides
@@ -156,10 +177,11 @@ deep mode: Why does this recursive CTE produce duplicates?
 ```
 src/
   server.ts            HTTP server, routing, admin API, auth middleware
-  provider.ts          Multi-provider forwarding (Anthropic, OpenAI, Bedrock SigV4) + usage capture
+  provider.ts          Multi-provider forwarding (OpenAI · Azure OpenAI · OpenAI-on-Bedrock; SigV4 / api-key / Entra) + usage capture
   config.ts            External config + effective-config overlay (file + DB overrides)
   models.ts            Model catalog + pricing
   admin-ui.ts          Admin console SPA (served at /admin)
+  metrics.ts           Prometheus registry (served at /metrics)
   router/              Weighted classifier + tier mappings
   security/            ← the security layer
     identity/          OIDC/JWT verification
@@ -168,7 +190,9 @@ src/
     egress/            Deny-by-default allow-list + classification gate
     audit/             Hash-chained audit + syslog/SIEM
     store/             node:sqlite (ledger, audit, overrides)
-    transport/         TLS/FIPS + AWS SigV4
+    transport/         TLS/FIPS + AWS SigV4 + Azure Entra
+    resilience.ts      per-provider circuit breaker
+    mcp/               governed MCP tool gateway (deny-by-default tools)
 docs/compliance/       CMMC control matrix + hardening guide
 deploy/                Dockerfile, compose test stack, mocks, runbook
 test/security/         Unit + integration tests
@@ -176,4 +200,4 @@ test/security/         Unit + integration tests
 
 ## License
 
-[MIT](LICENSE). Routing engine descends from BlockRunAI/ClawRouter (MIT); the x402 payment layer was removed and the security/governance layer added.
+[Apache 2.0](LICENSE) — Copyright 2026 Austin Probe. The routing engine descends from BlockRunAI/ClawRouter (MIT); that upstream attribution is preserved in [NOTICE](NOTICE). The x402 payment layer was removed and the security & governance control plane added.

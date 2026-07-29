@@ -22,7 +22,7 @@
   "models": [{ "id": "local/mock-embed", "name": "Mock Embed", "inputPrice": 1, "outputPrice": 0, "kind": "embedding" }],
   "embeddings": { "default": "local/mock-embed" },
 
-  "auth": { "default": "openclaw", "openclaw": { "type": "openclaw", "profilesPath": "/etc/secrouter/upstream-auth.json" } },
+  "auth": { "default": "profiles", "profiles": { "type": "profiles", "profilesPath": "/etc/secrouter/upstream-auth.json" } },
 
   "security": {
     "enabled": true,
