@@ -405,7 +405,7 @@ export function toInternalApiType(
  */
 export function supportsAdaptiveThinking(modelId: string): boolean {
   const cfg = getConfig();
-  const patterns = cfg.thinking?.adaptive ?? ["claude-opus-4-6", "claude-opus-4.6"];
+  const patterns = cfg.thinking?.adaptive ?? [];
   return patterns.some(p => modelId.includes(p));
 }
 
