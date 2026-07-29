@@ -15,7 +15,7 @@
  *   });
  *
  *   console.log(decision);
- *   // { model: "anthropic/claude-opus-4-6", tier: "REASONING", confidence: 0.97, ... }
+ *   // { model: "bedrock/openai.gpt-oss-120b-1:0", tier: "REASONING", confidence: 0.97, ... }
  */
 
 // Router
