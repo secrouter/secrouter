@@ -24,5 +24,5 @@ USER node
 EXPOSE 18800
 # Liveness: hit /health (unauthenticated). Uses the Node global fetch (>=18).
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.CLAWROUTER_PORT||18800)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.SECROUTER_PORT||18800)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "dist/server.js"]

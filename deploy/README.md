@@ -67,7 +67,7 @@ curl -H "Authorization: Bearer $(./get-token.sh admin)" http://localhost:18800/v
 ```bash
 docker build -t secrouter:test ..
 docker run --rm -p 18800:18800 \
-  -e FREEROUTER_CONFIG=/etc/secrouter/config.json -e CLAWROUTER_HOST=0.0.0.0 \
+  -e FREEROUTER_CONFIG=/etc/secrouter/config.json -e SECROUTER_HOST=0.0.0.0 \
   -e LOCAL_LLM_API_KEY=test-key \
   -v "$PWD/secrouter.config.test.json:/etc/secrouter/config.json:ro" \
   -v secrouter-data:/var/lib/secrouter \
@@ -81,7 +81,7 @@ docker run --rm -p 18800:18800 \
 cd .. && npm ci && npm run build            # -> dist/server.js
 # terminal 1: PORT=9081 EXTERNAL_ISSUER=http://localhost:9081 node deploy/mock-oidc/server.mjs
 # terminal 2: PORT=9082 node deploy/mock-llm/server.mjs
-# terminal 3: FREEROUTER_CONFIG=<a localhost-wired config> CLAWROUTER_PORT=9080 \
+# terminal 3: FREEROUTER_CONFIG=<a localhost-wired config> SECROUTER_PORT=9080 \
 #             LOCAL_LLM_API_KEY=test node dist/server.js
 ```
 (Use localhost URLs for `oidc.issuer`/`jwksUri`, the `local` provider `baseUrl`,
