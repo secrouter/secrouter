@@ -190,8 +190,8 @@ initSecurity(appConfig.security);
 breaker.setConfig(resolveResilience(appConfig.security?.resilience));
 startHealthChecks();
 
-const PORT = parseInt(process.env.CLAWROUTER_PORT ?? String(appConfig.port), 10);
-const HOST = process.env.CLAWROUTER_HOST ?? appConfig.host ?? "127.0.0.1";
+const PORT = parseInt(process.env.SECROUTER_PORT ?? String(appConfig.port), 10);
+const HOST = process.env.SECROUTER_HOST ?? appConfig.host ?? "127.0.0.1";
 
 // Build pricing map once at startup
 const modelPricing = buildPricingMap();

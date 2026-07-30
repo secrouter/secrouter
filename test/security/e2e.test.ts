@@ -196,7 +196,7 @@ async function main() {
   let log = "";
   const child: ChildProcess = spawn("npx", ["tsx", "src/server.ts"], {
     cwd: CWD,
-    env: { ...process.env, FREEROUTER_CONFIG: cfgPath, CLAWROUTER_PORT: String(ROUTER_PORT) },
+    env: { ...process.env, FREEROUTER_CONFIG: cfgPath, SECROUTER_PORT: String(ROUTER_PORT) },
   });
   child.stdout?.on("data", (d) => (log += d));
   child.stderr?.on("data", (d) => (log += d));
