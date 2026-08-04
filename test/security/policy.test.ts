@@ -104,6 +104,43 @@ console.log("Policy engine:");
   ok("EXPLICIT non-allowed model → deny", authorize(denyPol, "bedrock/claude-opus", "EXPLICIT", ROUTING).effect === "deny");
 }
 
+// Service-account governance (security.oidc.serviceSubjects, Feature: OIDC
+// service-account auth): a service principal is just another Principal.id to
+// the policy engine — no MFA/role special-casing anywhere here. Confirms it
+// can be assigned its own budget/tier/classification via the EXISTING
+// policy.users[<sub>] mechanism, same as a human.
+{
+  const svc: Principal = { id: "svc-agent-1", groups: [], roles: ["service"], mfa: false, claims: {} };
+  const secWithSvc: SecurityConfig = {
+    ...SEC,
+    policy: {
+      ...SEC.policy!,
+      users: {
+        ...SEC.policy!.users,
+        "svc-agent-1": { allowedTiers: ["SIMPLE"], maxClassification: "UNCLASSIFIED", onViolation: "deny" },
+      },
+    },
+  };
+  const pol = resolvePolicy(svc, secWithSvc);
+  ok(
+    "service principal picks up its own policy.users[sub] entry",
+    JSON.stringify(pol.allowedTiers) === JSON.stringify(["SIMPLE"]) && pol.maxClassification === "UNCLASSIFIED",
+    JSON.stringify(pol),
+  );
+  const d = authorize(pol, "bedrock/claude-sonnet", "MEDIUM", ROUTING);
+  ok("service principal denied a tier outside its assigned policy", d.effect === "deny", JSON.stringify(d));
+  const allow = authorize(pol, "local/llama", "SIMPLE", ROUTING);
+  ok("service principal allowed within its assigned policy", allow.effect === "allow", JSON.stringify(allow));
+
+  // No per-sub entry → falls back to the default/group floor like any principal.
+  const svcNoOverride = resolvePolicy({ ...svc, id: "svc-agent-2" }, secWithSvc);
+  ok(
+    "a service sub with no policy.users entry gets the default floor (no implicit grant from roles)",
+    JSON.stringify(svcNoOverride.allowedTiers) === JSON.stringify(SEC.policy!.default.allowedTiers),
+    JSON.stringify(svcNoOverride),
+  );
+}
+
 console.log("\nQuota:");
 {
   const store = new SqliteStore(":memory:");
