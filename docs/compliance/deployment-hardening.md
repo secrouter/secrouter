@@ -111,6 +111,8 @@ Machine clients use the OIDC **client‑credentials** grant (no separate API key
 
 Obtain `SECROUTER_TOKEN` from the IdP token endpoint and refresh before `exp`. Optional: send `X-Data-Classification: CUI` (capped by the caller's clearance).
 
+**Service accounts and `requireMfa`.** A client-credentials token has no interactive login, so it can never carry an `amr`/`acr` MFA assertion — with `requireMfa: true` (recommended, §9) it is rejected like any other non-MFA token. To admit a specific, known machine identity, add its exact `sub` to `security.oidc.serviceSubjects`. This is opt-in and narrow: absent/empty changes nothing, every `sub` **not** listed still requires MFA/acr exactly as before, and every other check (signature, issuer, audience, expiry, algorithm) still applies in full. The admitted principal is tagged `roles: [...,"service"]` for audit visibility. Govern it exactly like a human — assign its budget/model/classification via `security.policy.users[<sub>]` (see the `svc-batch-pipeline@example.mil` entry in the hardened example). Treat each listed `sub` as a credential: one per integration (never shared), rotated/revoked at the IdP on the same schedule as any other service credential.
+
 ## 7a. Admin console (`GET /admin`)
 
 A web UI for usage monitoring and live policy/model configuration, served by the router itself behind the same boundary. The page shell and `GET /admin/oidc` are public; all data and mutation endpoints (`/admin/api/*`) require the **admin** role.
@@ -132,6 +134,7 @@ A web UI for usage monitoring and live policy/model configuration, served by the
 - [ ] `security.enabled: true`, `requireFips: true`, FIPS front end or FIPS Node verified
 - [ ] Egress allow‑list contains **only** GovCloud/in‑boundary hosts; **no** commercial `api.anthropic.com`, **no** Kimi/Moonshot
 - [ ] OIDC enforces MFA; `requireMfa: true`; `trackJti: true`
+- [ ] `security.oidc.serviceSubjects` (if used) lists only known, individually-scoped machine `sub`s — one per integration, each with its own `policy.users[<sub>]` entry and rotation schedule
 - [ ] CORS `allowedOrigins` empty or explicit; admin endpoints role‑gated
 - [ ] `storePath` on an encrypted volume; SIEM forwarding live; NTP synced
 - [ ] `npm run test:security` and `e2e.test.ts` pass on the built artifact

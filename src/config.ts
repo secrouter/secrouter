@@ -716,6 +716,16 @@ export function validateSecurityConfig(cfg: FreeRouterConfig = getConfig()): str
     if (banned.length) {
       errors.push(`security.oidc.algorithms must not include symmetric/none algs: ${banned.join(", ")}`);
     }
+    // Service-subject MFA/acr exemption allow-list — structural check only
+    // (fail-closed on shape). Absent/empty is valid and preserves today's
+    // behavior; see OidcConfig.serviceSubjects.
+    if (sec.oidc.serviceSubjects !== undefined) {
+      if (!Array.isArray(sec.oidc.serviceSubjects)) {
+        errors.push("security.oidc.serviceSubjects must be an array of subject (sub) strings");
+      } else if (sec.oidc.serviceSubjects.some((s) => typeof s !== "string" || s.trim() === "")) {
+        errors.push("security.oidc.serviceSubjects entries must be non-empty strings (exact `sub` claims)");
+      }
+    }
   }
 
   // Egress deny-by-default (Feature 3) — the allow-list must exist and be non-empty.

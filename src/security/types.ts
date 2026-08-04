@@ -60,6 +60,23 @@ export type OidcConfig = {
   /** Minimum acceptable `acr` value, if your IdP uses acr levels. */
   requiredAcr?: string;
   /**
+   * Exact `sub` claims exempted from `requireMfa`/`requiredAcr` above — for
+   * non-interactive machine clients (OIDC client-credentials grant) that can
+   * never produce an MFA assertion. Narrow and opt-in: absent/empty changes
+   * nothing; every `sub` NOT listed here still requires MFA/acr exactly as
+   * before. Every other check (signature, issuer, audience, exp/nbf,
+   * algorithm, jti replay) still applies in full — this only lifts the
+   * MFA/acr gate. A matched principal is tagged `roles: [..., "service"]`
+   * (informational for audit; it grants nothing by itself).
+   *
+   * CMMC note: these are non-interactive service identities — scope tightly
+   * (one `sub` per integration, never shared across services), rotate/revoke
+   * the credential at the IdP like any other, and govern its budget/model/
+   * classification access the same way as a human via
+   * `security.policy.users[<sub>]`.
+   */
+  serviceSubjects?: string[];
+  /**
    * Enforce SINGLE-USE per `jti` (replay cache). Default off. WARNING: standard
    * OIDC access tokens are multi-use bearer tokens — enabling this rejects the
    * second request that reuses a token, so only turn it on if your IdP issues

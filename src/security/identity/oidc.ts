@@ -8,6 +8,12 @@
  * 3.5.4 (replay resistance via jti). Signature verification runs through the
  * Node crypto backend so it inherits a FIPS-validated OpenSSL when present
  * (SC 3.13.11).
+ *
+ * `security.oidc.serviceSubjects` is a narrow, opt-in escape hatch from the
+ * MFA/acr gate (3.5.3) for non-interactive machine clients (OIDC
+ * client-credentials grant) enumerated by exact `sub`; see the field's doc
+ * in security/types.ts. Absent/empty ⇒ no change to today's behavior, and
+ * every `sub` not listed still requires MFA/acr exactly as before.
  */
 
 import { createRemoteJWKSet, jwtVerify, errors as joseErrors } from "jose";
@@ -109,17 +115,29 @@ export class OidcProvider implements IdentityProvider {
     }
 
     if (!payload.sub) throw new AuthError("missing_sub");
+    const sub = String(payload.sub);
+
+    // ── Service-subject exemption (opt-in, narrow) ──
+    // A machine client on the client-credentials grant has no interactive
+    // login and can never produce an MFA assertion. Rather than weaken
+    // requireMfa/requiredAcr globally, an operator may enumerate exact `sub`s
+    // here that skip ONLY those two checks below. Everything already verified
+    // above (signature, issuer, audience, exp/nbf, algorithm) still applies
+    // in full, and any `sub` not in this list is completely unaffected.
+    const isServiceSubject = (this.cfg.serviceSubjects ?? []).includes(sub);
 
     // ── MFA assertion (IA 3.5.3) ──
     const amr = toStringArray(payload["amr"]);
     const mfaValues = this.cfg.mfaAmrValues ?? DEFAULT_MFA_AMR;
     const mfa = amr.some((a) => mfaValues.includes(a));
-    if (this.cfg.requireMfa && !mfa) throw new AuthError("mfa_required");
-    if (this.cfg.requiredAcr && payload["acr"] !== this.cfg.requiredAcr) {
-      throw new AuthError("acr_insufficient");
+    if (!isServiceSubject) {
+      if (this.cfg.requireMfa && !mfa) throw new AuthError("mfa_required");
+      if (this.cfg.requiredAcr && payload["acr"] !== this.cfg.requiredAcr) {
+        throw new AuthError("acr_insufficient");
+      }
     }
 
-    // ── Replay resistance (IA 3.5.4) ──
+    // ── Replay resistance (IA 3.5.4) ── unaffected by the exemption above.
     if (this.cfg.trackJti && this.store) {
       const jti = typeof payload.jti === "string" ? payload.jti : null;
       if (!jti) throw new AuthError("missing_jti");
@@ -127,15 +145,20 @@ export class OidcProvider implements IdentityProvider {
       if (!this.store.recordJtiIfNew(jti, exp)) throw new AuthError("token_replayed");
     }
 
+    // Informational tag only (audit/UI); governance is still the explicit
+    // security.policy.users[<sub>] mechanism, same as any other principal.
+    const roles = toStringArray(getByPath(payload, this.cfg.rolesClaim ?? "roles"));
+    if (isServiceSubject && !roles.includes("service")) roles.push("service");
+
     return {
-      id: String(payload.sub),
+      id: sub,
       email: typeof payload["email"] === "string" ? payload["email"] : undefined,
       displayName:
         (typeof payload["name"] === "string" && payload["name"]) ||
         (typeof payload["preferred_username"] === "string" && payload["preferred_username"]) ||
         undefined,
       groups: toStringArray(getByPath(payload, this.cfg.groupsClaim ?? "groups")),
-      roles: toStringArray(getByPath(payload, this.cfg.rolesClaim ?? "roles")),
+      roles,
       mfa,
       authTime: typeof payload["auth_time"] === "number" ? payload["auth_time"] : undefined,
       jti: typeof payload.jti === "string" ? payload.jti : undefined,

@@ -36,7 +36,7 @@ Status legend: ✅ enforced in code · ⚙️ configurable · 🤝 shared (needs
 | Control | Requirement | Implementation | Evidence |
 |---|---|---|---|
 | 3.5.1 / 3.5.2 | Identify & authenticate users | OIDC JWT validation (signature via JWKS, `iss`/`aud`/`exp`/`nbf`) | `src/security/identity/oidc.ts` |
-| 3.5.3 | **Multifactor authentication** | Token must evidence MFA via `amr`/`acr`; rejected otherwise (MFA performed at IdP) | `oidc.ts` MFA assertion |
+| 3.5.3 | **Multifactor authentication** | Token must evidence MFA via `amr`/`acr`; rejected otherwise (MFA performed at IdP). Non-interactive machine clients (OIDC client-credentials grant) may be individually exempted from this gate only, by exact `sub`, via opt-in `security.oidc.serviceSubjects`; every other `sub` is unaffected and every other check (signature/issuer/audience/exp) still applies. Each exempted subject is a non-person entity — scope one `sub` per integration and rotate/revoke at the IdP | `oidc.ts` MFA assertion / service-subject exemption |
 | 3.5.4 | Replay‑resistant authentication | Short‑lived signed tokens over TLS + audience binding (verified `exp`/`nbf`/`aud`/sig). Optional single‑use `jti` cache for one‑time‑token schemes only; DPoP is the future sender‑constrained option. | `oidc.ts`, `store/sqlite.ts` |
 | 3.5.7 / 3.5.10 | Password complexity / cryptographically‑protected secrets | No passwords in SecRouter (delegated to IdP); no secrets logged; `/config` redacts | `config.ts` (`getSanitizedConfig`) |
 | — | Alg‑confusion defense | `none`/HMAC algorithms rejected at config‑validation and verification time | `config.ts` `validateSecurityConfig`, `oidc.ts` |

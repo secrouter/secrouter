@@ -60,6 +60,8 @@
       "requireMfa": true,
       "mfaAmrValues": ["mfa", "otp", "hwk", "pop", "sc"],
       "requiredAcr": "https://refeds.org/profile/mfa",
+      "serviceSubjects": ["svc-batch-pipeline@example.mil"],
+      "_serviceSubjects_note": "Exact `sub` claims exempted from requireMfa/requiredAcr above — for non-interactive machine clients (OIDC client-credentials grant) that can never produce an MFA assertion; e.g. the svc-batch-pipeline@example.mil service account governed under policy.users below. Every other check (signature, issuer, audience, exp) still applies in full, and every sub NOT listed here still requires MFA/acr unchanged. Keep this list tight — one sub per integration, never shared — and rotate/revoke the credential at the IdP like any other.",
       "_trackJti_note": "Leave OFF for standard OIDC access tokens (they are multi-use bearer tokens). Setting trackJti:true enforces SINGLE-USE per jti and will reject the 2nd request that reuses a token — only enable if your IdP issues one-time tokens.",
       "jwksCacheTtlSec": 600,
       "clientId": "secrouter-admin-console",
@@ -112,6 +114,7 @@
       },
       "users": {
         "svc-batch-pipeline@example.mil": {
+          "_comment": "Listed in security.oidc.serviceSubjects above so this non-interactive client-credentials token clears the MFA/acr gate; governed here exactly like a human principal.",
           "allowedModels": ["bedrock/openai.gpt-oss-20b-1:0"],
           "budgets": [{ "window": "day", "maxCostUsd": 50 }]
         }
