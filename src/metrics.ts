@@ -131,16 +131,16 @@ export const metrics = {
   authFailuresTotal: new Counter("secrouter_auth_failures_total", "Rejected authentications."),
   egressDeniedTotal: new Counter("secrouter_egress_denied_total", "Egress denials (deny-by-default gate)."),
   quotaDeniedTotal: new Counter("secrouter_quota_denied_total", "Requests refused for budget / rate limits."),
-  upstreamErrorsTotal: new Counter("secrouter_upstream_errors_total", "Upstream forward errors, by provider.", ["provider"]),
+  upstreamErrorsTotal: new Counter("secrouter_upstream_errors_total", "Upstream forward errors, by provider.", ["provider", "endpoint"]),
   circuitState: new LabeledGauge(
     "secrouter_circuit_state",
     "Provider circuit-breaker state (0 closed, 1 open, 2 half-open).",
-    ["provider"],
+    ["provider", "endpoint"],
   ),
   circuitTransitionsTotal: new Counter(
     "secrouter_circuit_transitions_total",
     "Circuit-breaker state transitions, by target state.",
-    ["provider", "state"],
+    ["provider", "endpoint", "state"],
   ),
   toolCallsTotal: new Counter(
     "secrouter_tool_calls_total",

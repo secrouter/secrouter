@@ -25,9 +25,24 @@ export class EgressDeniedError extends Error {
 }
 
 /**
+ * Normalize an egress rule's `allowedHost` into a non-empty ordered list of
+ * hosts: a single string becomes a one-element list (today's default,
+ * unchanged), an array is used as-is. Mirrors `config.endpointsOf()`'s
+ * string-or-array normalization for a provider's `baseUrl`.
+ */
+export function allowedHostsOf(rule: { allowedHost: string | string[] }): string[] {
+  return Array.isArray(rule.allowedHost) ? rule.allowedHost : [rule.allowedHost];
+}
+
+/**
  * Decide whether a request to (provider, host) carrying `classification` data
  * is permitted. Deny-by-default: an unlisted provider, a host mismatch, or a
  * classification the destination is not authorized for all fail closed.
+ *
+ * A provider with several upstream endpoints (config.endpointsOf) is
+ * authorized by ONE rule whose `allowedHost` lists every endpoint host — this
+ * matches ANY of them, so a pooled provider's replicas are all reachable
+ * under a single egress authorization while any other host still denies.
  */
 export function checkEgress(
   provider: string,
@@ -40,10 +55,11 @@ export function checkEgress(
   if (!rule) {
     return { allowed: false, reason: `provider '${provider}' is not in the egress allow-list` };
   }
-  if (rule.allowedHost !== host) {
+  const hosts = allowedHostsOf(rule);
+  if (!hosts.includes(host)) {
     return {
       allowed: false,
-      reason: `host '${host}' is not authorized for provider '${provider}' (expected '${rule.allowedHost}')`,
+      reason: `host '${host}' is not authorized for provider '${provider}' (expected ${hosts.map((h) => `'${h}'`).join(" or ")})`,
       rule,
     };
   }

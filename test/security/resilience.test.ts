@@ -82,6 +82,59 @@ console.log("\nPer-provider isolation:");
   ok("provider a open, provider b untouched (closed + admitted)", b.getState("a") === "open" && b.getState("b") === "closed" && b.admit("b").ok);
 }
 
+console.log("\nPer-endpoint isolation (multi-endpoint load balancing):");
+{
+  const b = new CircuitBreaker(cfg, now);
+  // endpoint 0 of provider "m" trips open; endpoint 1 must be untouched.
+  b.recordFailure("m", 0);
+  b.recordFailure("m", 0);
+  const tr0 = b.recordFailure("m", 0); // 3rd failure on endpoint 0 -> open
+  ok("endpoint 0 opens with a transition carrying endpoint:0", tr0?.to === "open" && tr0?.endpoint === 0);
+  ok("endpoint 0 is open and not admitted", b.getState("m", 0) === "open" && b.admit("m", 0).ok === false);
+  ok("endpoint 1 of the SAME provider is untouched (closed, admitted)", b.getState("m", 1) === "closed" && b.admit("m", 1).ok === true);
+
+  // Recovery is per-endpoint too: closing endpoint 1 (never opened) via success
+  // must not affect endpoint 0's open state.
+  const s1 = b.recordSuccess("m", 5, 1);
+  ok("recordSuccess on endpoint 1 (already closed) -> no transition", s1 === null);
+  ok("endpoint 0 still open after endpoint 1 activity", b.getState("m", 0) === "open");
+
+  // Default endpoint (omitted arg) is exactly endpoint 0 — same key, same state.
+  ok("omitting endpoint == endpoint 0 (same underlying state)", b.getState("m") === b.getState("m", 0) && b.admit("m").ok === false);
+
+  // Two DIFFERENT providers each addressed by endpoint never collide.
+  const b2 = new CircuitBreaker(cfg, now);
+  b2.recordFailure("x", 0);
+  b2.recordFailure("x", 0);
+  b2.recordFailure("x", 0); // x#0 opens
+  ok("provider x endpoint 0 open", b2.getState("x", 0) === "open");
+  ok("provider x endpoint 1 unaffected", b2.getState("x", 1) === "closed");
+  ok("a different provider y endpoint 0 unaffected", b2.getState("y", 0) === "closed");
+
+  // snapshot() surfaces one row per (provider, endpoint) with the endpoint field,
+  // and does NOT leak the internal composite key.
+  const snap = b.snapshot();
+  const e0 = snap.find((h) => h.provider === "m" && h.endpoint === 0);
+  const e1 = snap.find((h) => h.provider === "m" && h.endpoint === 1);
+  ok("snapshot has a distinct row for endpoint 0 (open)", e0?.state === "open");
+  ok("snapshot has a distinct row for endpoint 1 (closed)", e1?.state === "closed");
+}
+
+console.log("\nCooldown/half-open promotion is scoped to the failing endpoint:");
+{
+  clock = 4_000_000;
+  const b = new CircuitBreaker(cfg, now);
+  b.recordFailure("p", 2);
+  b.recordFailure("p", 2);
+  b.recordFailure("p", 2); // p#2 opens at clock=4_000_000
+  ok("p#2 open, p#0 (default) still closed and admitted", b.getState("p", 2) === "open" && b.admit("p").ok === true);
+  clock += 30_000; // cooldown elapses for p#2 only
+  const g = b.admit("p", 2);
+  ok("p#2 promoted to half-open after its own cooldown", g.ok === true && g.transition?.to === "half-open" && g.transition?.endpoint === 2);
+  const cl = b.recordSuccess("p", 7, 2);
+  ok("p#2 half-open probe succeeds -> closed", cl?.to === "closed" && cl?.endpoint === 2 && b.getState("p", 2) === "closed");
+}
+
 console.log("\nSnapshot shape:");
 {
   const b = new CircuitBreaker(cfg, now);

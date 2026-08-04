@@ -10,6 +10,13 @@
  * **half-open** and admits one probe request — success **closes** it, failure
  * re-arms the cooldown.
  *
+ * State is tracked per-ENDPOINT (`${provider}#${endpoint}`), not just per
+ * provider, so a provider with several upstream endpoints (see
+ * `config.endpointsOf` / `router/balance.ts`) isolates a failing replica
+ * without tripping the others. Every method's `endpoint` parameter defaults to
+ * `0`, so a single-endpoint provider (today's only shape) behaves exactly as
+ * before — callers that never pass `endpoint` are unaffected.
+ *
  * This module is pure state: it imports nothing from the rest of the app and
  * takes an injectable clock, so it is deterministic under test. Side effects
  * (metrics, audit) live at the call site, driven by the `Transition` values the
@@ -18,9 +25,11 @@
 
 export type CircuitState = "closed" | "open" | "half-open";
 
-/** Public, serialisable health of one provider (returned by snapshot()). */
+/** Public, serialisable health of one provider endpoint (returned by snapshot()). */
 export type ProviderHealth = {
   provider: string;
+  /** Index into the provider's endpoint list (config.endpointsOf); 0 for a single-endpoint provider. */
+  endpoint: number;
   state: CircuitState;
   consecutiveFailures: number;
   totalFailures: number;
@@ -31,9 +40,10 @@ export type ProviderHealth = {
   openedAt?: string; // ISO-8601, when it last tripped open
 };
 
-/** Emitted whenever a provider changes state, so the caller can meter + audit it. */
+/** Emitted whenever a provider endpoint changes state, so the caller can meter + audit it. */
 export type Transition = {
   provider: string;
+  endpoint: number;
   from: CircuitState;
   to: CircuitState;
   consecutiveFailures: number;
@@ -102,34 +112,36 @@ export class CircuitBreaker {
     return this.cfg;
   }
 
-  private get(provider: string): InternalHealth {
-    let h = this.providers.get(provider);
+  private get(provider: string, endpoint = 0): InternalHealth {
+    const key = `${provider}#${endpoint}`;
+    let h = this.providers.get(key);
     if (!h) {
-      h = { provider, state: "closed", consecutiveFailures: 0, totalFailures: 0, totalSuccesses: 0 };
-      this.providers.set(provider, h);
+      h = { provider, endpoint, state: "closed", consecutiveFailures: 0, totalFailures: 0, totalSuccesses: 0 };
+      this.providers.set(key, h);
     }
     return h;
   }
 
   /**
-   * May this provider be selected for the next attempt? A closed / half-open
-   * provider is always admitted. An open provider is skipped until its cooldown
-   * elapses, at which point it is promoted to half-open and the single probe is
-   * admitted (the returned Transition records that promotion).
+   * May this provider endpoint be selected for the next attempt? A closed /
+   * half-open endpoint is always admitted. An open endpoint is skipped until
+   * its cooldown elapses, at which point it is promoted to half-open and the
+   * single probe is admitted (the returned Transition records that promotion).
+   * `endpoint` defaults to 0 (the only endpoint a single-baseUrl provider has).
    */
-  admit(provider: string): { ok: boolean; transition: Transition | null } {
-    const h = this.get(provider);
+  admit(provider: string, endpoint = 0): { ok: boolean; transition: Transition | null } {
+    const h = this.get(provider, endpoint);
     if (h.state !== "open") return { ok: true, transition: null };
     if (this.now() - (h.openedAtMs ?? 0) >= this.cfg.cooldownSec * 1000) {
       h.state = "half-open";
-      return { ok: true, transition: { provider, from: "open", to: "half-open", consecutiveFailures: h.consecutiveFailures } };
+      return { ok: true, transition: { provider, endpoint, from: "open", to: "half-open", consecutiveFailures: h.consecutiveFailures } };
     }
     return { ok: false, transition: null };
   }
 
-  /** Record a successful forward. Closes a half-open/open provider; resets the streak. */
-  recordSuccess(provider: string, latencyMs?: number): Transition | null {
-    const h = this.get(provider);
+  /** Record a successful forward. Closes a half-open/open endpoint; resets the streak. */
+  recordSuccess(provider: string, latencyMs?: number, endpoint = 0): Transition | null {
+    const h = this.get(provider, endpoint);
     const from = h.state;
     h.consecutiveFailures = 0;
     h.totalSuccesses++;
@@ -139,31 +151,31 @@ export class CircuitBreaker {
       h.state = "closed";
       h.openedAtMs = undefined;
       h.openedAt = undefined;
-      return { provider, from, to: "closed", consecutiveFailures: 0 };
+      return { provider, endpoint, from, to: "closed", consecutiveFailures: 0 };
     }
     return null;
   }
 
   /** Record a health failure. Trips open at the threshold, or re-arms a failed probe. */
-  recordFailure(provider: string): Transition | null {
-    const h = this.get(provider);
+  recordFailure(provider: string, endpoint = 0): Transition | null {
+    const h = this.get(provider, endpoint);
     const from = h.state;
     h.consecutiveFailures++;
     h.totalFailures++;
     h.lastFailure = new Date(this.now()).toISOString();
-    // A closed provider trips once it crosses the threshold; a failed half-open
+    // A closed endpoint trips once it crosses the threshold; a failed half-open
     // probe re-opens immediately (re-arming the cooldown). Both are transitions.
     if (from === "half-open" || (from === "closed" && h.consecutiveFailures >= this.cfg.circuitThreshold)) {
       h.state = "open";
       h.openedAtMs = this.now();
       h.openedAt = new Date(this.now()).toISOString();
-      return { provider, from, to: "open", consecutiveFailures: h.consecutiveFailures };
+      return { provider, endpoint, from, to: "open", consecutiveFailures: h.consecutiveFailures };
     }
     return null;
   }
 
-  getState(provider: string): CircuitState {
-    return this.get(provider).state;
+  getState(provider: string, endpoint = 0): CircuitState {
+    return this.get(provider, endpoint).state;
   }
 
   /** Serialisable per-provider health for GET /admin/api/health. */

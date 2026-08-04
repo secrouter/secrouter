@@ -195,8 +195,20 @@ export type UsageBreakdownRow = {
 /** One upstream allow-list entry. Deny-by-default: only listed providers reach the network. */
 export type EgressRule = {
   provider: string;
-  /** Exact host this provider is permitted to reach. */
-  allowedHost: string;
+  /**
+   * Exact host(s) this provider is permitted to reach. A single host (today's
+   * default), or an array to authorize every endpoint host of a pooled
+   * provider (see `config.ProviderConfigEntry.baseUrl: string[]` /
+   * `config.endpointsOf`) under one rule — e.g. a multi-replica on-prem
+   * vLLM/SecLLM cluster. `checkEgress` matches ANY host in the list. This
+   * type never derives `allowedHost` from a provider's `baseUrl` on its own —
+   * egress authorization is a human compliance decision (which hosts, for
+   * which classifications) and must stay explicit: hand-authored directly in
+   * `security.egress.allowlist`, or merged in from an operator-supplied
+   * `SECROUTER_EGRESS_FILE` (config.ts applyEgressFileIntake) — never
+   * inferred from provider/routing config.
+   */
+  allowedHost: string | string[];
   /** Data classifications this destination is authorized to receive. */
   authorizedClassifications: string[];
   /** FedRAMP/IL note for the audit trail (e.g. "Bedrock GovCloud — FedRAMP High / IL4-5"). */
@@ -229,7 +241,7 @@ export type McpServerConfig = {
 // ─── Audit (Feature 3) ───
 
 export type AuditInput = {
-  type: string; // auth.success | auth.failure | authz.deny | authz.downgrade | route.decision | egress.deny | usage | admin.action | config.reload | provider.circuit | tool.call | tool.deny | error | anomaly
+  type: string; // auth.success | auth.failure | authz.deny | authz.downgrade | route.decision | egress.deny | egress.file_loaded | usage | admin.action | config.reload | provider.circuit | tool.call | tool.deny | error | anomaly
   requestId?: string;
   principalId?: string;
   sourceIp?: string;

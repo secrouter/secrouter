@@ -11,6 +11,36 @@ Ordering within each tier is by expected value to the target buyer.
 
 ---
 
+## Shipped
+
+### Per-provider load balancing (formerly Tier 2 #3)
+Multiple base URLs per provider (`baseUrl: string[]`), round-robin across
+on-prem/self-hosted replicas with breaker-aware, model-aware selection.
+- **Shipped as**: `config.endpointsOf()` + `router/balance.ts` (`selectEndpoints`)
+  + a per-`(provider, endpoint)` circuit breaker (`security/resilience.ts`).
+  Active `/v1/models` health polling feeds both liveness (per-endpoint breaker)
+  and model-awareness (an endpoint only offered a model it's confirmed to
+  serve); auto-enabled for any pooled provider. Polling and forwarding both
+  carry the provider's resolved auth header when one is configured.
+  `security.egress.allowlist[].allowedHost` accepts an array so one rule
+  authorizes every pool host. Turnkey intake for a self-hosted SecLLM pool via
+  `SECROUTER_SECLLM_ENDPOINTS` — routing + provider auth ONLY (bearer token
+  resolved from `SECROUTER_SECLLM_TOKEN`); it never infers egress. Egress
+  stays explicit and deny-by-default: hand-author a `secllm` rule, or point
+  `SECROUTER_EGRESS_FILE` at a deployer-generated JSON rules file (merged
+  additively into `security.egress.allowlist`, deduped, audit-evident via a
+  dedicated `egress.file_loaded` event, fails loud on a missing/malformed
+  file rather than silently continuing).
+- **Not shipped from the original scope**: per-provider *key* pools (multiple
+  credentials, rotate/spread) — `auth` is still single-credential-per-provider.
+  Selection today is breaker-aware round robin, not weighted.
+- **Docs**: README "Multi-endpoint / load-balanced providers", "Turnkey
+  SecLLM pool", "Egress stays explicit"; tests in
+  `test/security/balance.test.ts`, `resilience.test.ts`, `egress.test.ts`,
+  `secllm-intake.test.ts`, `endpoints.test.ts`, `azure.test.ts`, `e2e.test.ts`.
+
+---
+
 ## Tier 2 — valuable, moderate effort
 
 ### 1. In-boundary guardrail hook (PII / prompt-injection screening)
@@ -40,15 +70,16 @@ balancer.
   a verifier that understands the chosen topology.
 - **Effort**: M–L.
 
-### 3. Per-provider key pools & load balancing
-Multiple credentials per provider (rotate/spread) and multiple base URLs per provider
-(round-robin across on-prem vLLM replicas), with breaker-aware selection.
-- **Why**: rate-limit headroom on commercial endpoints; horizontal scale for
-  self-hosted clusters; graceful key rotation (add new, drain old — audited).
-- **Design notes**: `auth` and `baseUrl` accept arrays; selection is weighted +
-  health-aware (builds on the Tier 1 circuit breaker). Key identity (never the secret)
-  appears in audit/usage for attribution.
-- **Effort**: M.
+### 3. Per-provider key pools (credential rotation)
+Multiple credentials per provider (rotate/spread), on top of the multi-*endpoint*
+load balancing already shipped (see "Shipped" above).
+- **Why**: rate-limit headroom on commercial endpoints; graceful key rotation
+  (add new, drain old — audited).
+- **Design notes**: `auth` accepts an array; selection is weighted, not just the
+  round-robin `router/balance.ts` already does for endpoints. Key identity
+  (never the secret) appears in audit/usage for attribution.
+- **Effort**: S–M (the endpoint half of this — round-robin, breaker-aware
+  selection — is done; this is the remaining credential-pool half).
 
 ### 4. Additional CUI-authorized providers: Azure OpenAI (Azure Government), Vertex (Assured Workloads)
 Not breadth for its own sake — these are the other FedRAMP/IL-authorized egress

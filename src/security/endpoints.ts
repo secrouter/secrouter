@@ -18,10 +18,12 @@ import {
   getConfig,
   writeConfigFile,
   validateSecurityConfig,
+  endpointsOf,
   type FreeRouterConfig,
   type ProviderConfigEntry,
   type ModelCatalogEntry,
 } from "../config.js";
+import { allowedHostsOf } from "./egress/allowlist.js";
 import type { EgressRule } from "./types.js";
 
 export type ApiType = "openai" | "anthropic" | "bedrock" | "azure";
@@ -61,14 +63,16 @@ function configuredHosts(): Set<string> {
   const set = new Set<string>();
   const cfg = getConfig();
   for (const p of Object.values(cfg.providers ?? {})) {
-    try {
-      set.add(new URL(p.baseUrl).hostname.toLowerCase());
-    } catch {
-      /* ignore malformed baseUrl */
+    for (const url of endpointsOf(p)) {
+      try {
+        set.add(new URL(url).hostname.toLowerCase());
+      } catch {
+        /* ignore malformed baseUrl */
+      }
     }
   }
   for (const r of cfg.security?.egress?.allowlist ?? []) {
-    set.add(r.allowedHost.split(":")[0].toLowerCase());
+    for (const h of allowedHostsOf(r)) set.add(h.split(":")[0].toLowerCase());
   }
   return set;
 }
