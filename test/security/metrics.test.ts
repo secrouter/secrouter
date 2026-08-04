@@ -22,11 +22,11 @@ metrics.tokensTotal.inc({ direction: "output" }, 40);
 metrics.costUsdTotal.inc({}, 0.0025);
 metrics.authFailuresTotal.inc();
 metrics.egressDeniedTotal.inc();
-metrics.upstreamErrorsTotal.inc({ provider: "bedrock" });
+metrics.upstreamErrorsTotal.inc({ provider: "bedrock", endpoint: "0" });
 metrics.requestDuration.observe({ tier: "MEDIUM" }, 0.3);
 metrics.requestDuration.observe({ tier: "MEDIUM" }, 1.5);
-metrics.circuitState.set({ provider: "local" }, 1); // open
-metrics.circuitTransitionsTotal.inc({ provider: "local", state: "open" });
+metrics.circuitState.set({ provider: "local", endpoint: "0" }, 1); // open
+metrics.circuitTransitionsTotal.inc({ provider: "local", endpoint: "0", state: "open" });
 
 const out = renderMetrics();
 
@@ -36,7 +36,7 @@ ok("tokens split by direction", out.includes('secrouter_tokens_total{direction="
 ok("float cost counter", /secrouter_cost_usd_total 0\.0025/.test(out));
 ok("unlabeled counter renders its value", out.includes("secrouter_auth_failures_total 1"));
 ok("un-touched counter still initializes to 0", out.includes("secrouter_quota_denied_total 0"));
-ok("labeled upstream errors", out.includes('secrouter_upstream_errors_total{provider="bedrock"} 1'));
+ok("labeled upstream errors", out.includes('secrouter_upstream_errors_total{provider="bedrock",endpoint="0"} 1'));
 ok(
   "histogram: cumulative buckets + le=+Inf",
   out.includes('secrouter_request_duration_seconds_bucket{tier="MEDIUM",le="0.5"} 1') &&
@@ -49,10 +49,10 @@ ok(
 );
 ok("gauges present", /secrouter_up 1/.test(out) && /secrouter_start_time_seconds \d+/.test(out));
 ok(
-  "circuit-breaker gauge + transitions counter (Phase C)",
+  "circuit-breaker gauge + transitions counter (Phase C, per-endpoint)",
   /# TYPE secrouter_circuit_state gauge/.test(out) &&
-    out.includes('secrouter_circuit_state{provider="local"} 1') &&
-    out.includes('secrouter_circuit_transitions_total{provider="local",state="open"} 1'),
+    out.includes('secrouter_circuit_state{provider="local",endpoint="0"} 1') &&
+    out.includes('secrouter_circuit_transitions_total{provider="local",endpoint="0",state="open"} 1'),
 );
 ok("NO principal / request-id labels leak", !/principal|request_?id/i.test(out));
 

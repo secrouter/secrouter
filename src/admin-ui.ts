@@ -136,6 +136,10 @@ export const ADMIN_HTML = `<!doctype html>
   function $(id){ return document.getElementById(id); }
   function toast(msg, bad){ var t=el("div",{class:"toast",text:msg}); if(bad)t.style.borderLeftColor="var(--bad)"; document.body.appendChild(t); setTimeout(function(){t.remove();},2500); }
   function usd(n){ return "$"+(Math.round((n||0)*1e4)/1e4); }
+  // Render a string-or-array config field (baseUrl, allowedHost — both accept
+  // a pooled/multi-host array) as a readable comma list, never an implicit
+  // Array.toString(). "—" for empty/missing.
+  function listText(v){ if(Array.isArray(v)) return v.length?v.join(", "):"—"; return v||"—"; }
 
   // ── PKCE ──
   function b64url(buf){ return btoa(String.fromCharCode.apply(null,new Uint8Array(buf))).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=+$/,""); }
@@ -251,10 +255,15 @@ export const ADMIN_HTML = `<!doctype html>
         card.appendChild(el("div",{class:"muted",style:"font-size:12px;margin:-4px 0 10px;",
           text:"Trips open after "+r.circuitThreshold+" consecutive failures; "+r.cooldownSec+"s cooldown before a half-open probe. "+(r.healthIntervalSec?("Active checks every "+r.healthIntervalSec+"s."):"Passive (no background checks).")}));
         var t = el("table",{}, el("tr",{},[el("th",{text:"provider"}),el("th",{text:"state"}),el("th",{text:"consec. fails"}),el("th",{text:"total fail / ok"}),el("th",{text:"last latency"}),el("th",{text:"last ok"}),el("th",{text:"last fail"})]));
+        // A pooled provider (>1 endpoint) reports one row per endpoint — label
+        // those "name#idx" so they're distinguishable; a single-endpoint
+        // provider still shows its bare name (today's shape, unchanged).
+        var rowsPerProvider = {}; (d.providers||[]).forEach(function(p){ rowsPerProvider[p.provider]=(rowsPerProvider[p.provider]||0)+1; });
         (d.providers||[]).forEach(function(p){
           var s = STATE[p.state]||{cls:"muted",label:p.state||"unknown"};
+          var label = p.provider + (rowsPerProvider[p.provider]>1 ? "#"+p.endpoint : "");
           t.appendChild(el("tr",{},[
-            el("td",{text:p.provider}),
+            el("td",{text:label}),
             el("td",{}, el("span",{class:"pill "+s.cls,text:s.label})),
             el("td",{text:String(p.consecutiveFailures||0)}),
             el("td",{class:"muted",text:(p.totalFailures||0)+" / "+(p.totalSuccesses||0)}),
@@ -581,7 +590,7 @@ export const ADMIN_HTML = `<!doctype html>
     var epCard = el("div",{class:"card"}, el("h3",{},["Model endpoints ", el("span",{class:"pill warn",text:"egress · compliance-critical"})]));
     epCard.appendChild(el("table",{}, [el("tr",{},[el("th",{text:"name"}),el("th",{text:"api"}),el("th",{text:"endpoint"}),el("th",{text:"egress host"}),el("th",{text:"classifications"})])].concat(
       Object.keys(cfg.providers||{}).map(function(n){ var p=cfg.providers[n], e=egByProv[n]||{};
-        return el("tr",{},[el("td",{text:n}),el("td",{text:p.api}),el("td",{text:p.baseUrl}),el("td",{text:e.allowedHost||"—"}),el("td",{text:(e.authorizedClassifications||[]).join(", ")||"—"})]); })
+        return el("tr",{},[el("td",{text:n}),el("td",{text:p.api}),el("td",{text:listText(p.baseUrl)}),el("td",{text:listText(e.allowedHost)}),el("td",{text:(e.authorizedClassifications||[]).join(", ")||"—"})]); })
     )));
     main.appendChild(epCard);
     main.appendChild(buildEndpointWizard(levels));

@@ -44,7 +44,8 @@ A dependency-free web UI (OIDC PKCE login) to **monitor** per-user/model/day usa
 ### 🔭 Operate & prove
 - **Painless provider switching** — OpenAI-on-Bedrock (GovCloud) and Azure OpenAI both speak the OpenAI API, so moving a tier between clouds is a one-line target change. Credentials are handled per-provider: Bedrock API key / SigV4, Azure `api-key` **or** Microsoft Entra.
 - **Observability** — Prometheus `/metrics` (auth, routing, tokens, cost, circuit state) and W3C `traceparent` propagation across the pipeline.
-- **Provider health & failover** — a per-provider circuit breaker trips on upstream faults and fails over within the tier; live state on the console.
+- **Provider health & failover** — a per-**endpoint** circuit breaker trips on upstream faults and fails over within the tier; live state on the console.
+- **Multi-endpoint load balancing** — give a provider several base URLs (`baseUrl: [...]`) to round-robin, breaker-isolated and model-aware, across replicas of the same backend (e.g. a self-hosted GPU pool); see [Configuration](#configuration).
 - **Governed embeddings & tool-calling** — `POST /v1/embeddings` and an OpenAI-compatible **MCP** tool gateway (`POST /mcp`, deny-by-default tool allow-list) run under the same auth, policy, egress, and audit controls.
 - **Assessor-ready evidence** — verify the hash-chained audit in one call; export a one-click evidence bundle (config baseline, FIPS/TLS posture, control self-assessment).
 
@@ -116,7 +117,11 @@ Config is loaded from, in order: `FREEROUTER_CONFIG` env var → `./freerouter.c
                  "baseUrl": "https://bedrock-runtime.us-gov-west-1.amazonaws.com/openai/v1" },
     // Azure AI Foundry (OpenAI) — api-key or Microsoft Entra; switch a tier by changing its target
     "azure":   { "api": "azure", "baseUrl": "https://my-aoai.openai.azure.com", "azureAuth": "entra" },
-    "local":   { "api": "openai", "baseUrl": "https://llm.internal.example.mil/v1" }
+    "local":   { "api": "openai", "baseUrl": "https://llm.internal.example.mil/v1" },
+    // Pooled provider: an array of base URLs round-robins across replicas of the
+    // SAME backend (e.g. a self-hosted GPU cluster), breaker-isolated per endpoint
+    // and model-aware (an endpoint is only offered a model its /v1/models lists).
+    "secllm":  { "api": "openai", "baseUrl": ["https://gpu1.internal.example.mil/v1", "https://gpu2.internal.example.mil/v1"] }
   },
   "tiers": {
     "SIMPLE":    { "primary": "bedrock/openai.gpt-oss-20b-1:0",  "fallback": ["local/llama-3.3-70b-instruct"] },
@@ -129,12 +134,87 @@ Config is loaded from, in order: `FREEROUTER_CONFIG` env var → `./freerouter.c
     "oidc":   { "issuer": "https://idp.example.mil/realms/cui", "audience": "secrouter", "requireMfa": true },
     "egress": { "allowlist": [
       { "provider": "bedrock", "allowedHost": "bedrock-runtime.us-gov-west-1.amazonaws.com", "authorizedClassifications": ["CUI"] },
-      { "provider": "azure",   "allowedHost": "my-aoai.openai.azure.com",                    "authorizedClassifications": ["CUI"] }
+      { "provider": "azure",   "allowedHost": "my-aoai.openai.azure.com",                    "authorizedClassifications": ["CUI"] },
+      // One rule, both pool hosts — allowedHost accepts an array so a pooled
+      // provider's endpoints are ALL authorized (checkEgress matches any of them);
+      // a host you add to `secllm.baseUrl` later but forget to list here still denies.
+      { "provider": "secllm", "allowedHost": ["gpu1.internal.example.mil", "gpu2.internal.example.mil"], "authorizedClassifications": ["CUI"] }
     ] },
     "policy": { "default": { "allowedTiers": ["SIMPLE","MEDIUM"], "budgets": [{ "window": "day", "maxCostUsd": 25 }] } }
   }
 }
 ```
+
+**Multi-endpoint / load-balanced providers.** Any provider's `baseUrl` accepts a
+single string (default) or an array of URLs. An array round-robins traffic
+across the endpoints, with per-endpoint circuit breaking (one replica going
+down doesn't take the others with it) and model-aware routing (an endpoint is
+only offered a model that its own `GET /v1/models` reports serving — an
+endpoint of unconfirmed support is still preferred over failing the request
+outright). `security.egress.allowlist[].allowedHost` accepts the same
+string-or-array shape, so ALL of a pool's hosts can be authorized under one
+rule; a host that's reachable but not listed there is still denied. See
+`GET /admin/api/health` / the console's Provider health panel for live,
+per-endpoint circuit state.
+
+**Turnkey SecLLM pool — `SECROUTER_SECLLM_ENDPOINTS`.** Set this env var to a
+comma-separated list of base URLs (e.g.
+`SECROUTER_SECLLM_ENDPOINTS=https://gpu1.internal:8000/v1,https://gpu2.internal:8000/v1`)
+and SecRouter auto-registers a pooled `secllm` provider — with bearer-token
+auth resolved from `SECROUTER_SECLLM_TOKEN` (the same env-based provider
+`auth` every other provider uses; unset = no `Authorization` header sent, for
+an open/unauthenticated SecLLM) — and turnkey-routes SIMPLE/MEDIUM/COMPLEX/
+REASONING (in both `tiers` and `agenticTiers`) to SecLLM's default-catalog
+friendly model ids — `secllm/fast`, `secllm/balanced`, `secllm/large`,
+`secllm/reasoning` respectively — demoting whatever was previously each
+tier's primary into that tier's fallback instead of discarding it. A custom
+SecLLM catalog uses different model ids; hand-configure `providers.secllm`
+and the tier mappings yourself in that case. This intake is purely additive
+and a strict no-op the moment you take explicit ownership — either by
+defining your own `secllm` provider or routing any tier to `secllm/*`
+yourself. **It only ever wires up routing + credentials — never a network
+path**; see egress below.
+
+**Egress stays explicit — `SECROUTER_EGRESS_FILE`.** The turnkey intake above
+never touches `security.egress`: under `security.enabled: true`, the
+turnkey-routed pool stays egress-**denied** (deny-by-default, unchanged)
+until you authorize it yourself, exactly like any other provider — either a
+hand-authored `secllm` rule in `security.egress.allowlist` (see
+[Configuration](#configuration) above), or — for deployment tooling that
+generates the enclave's authorized hosts as a file rather than hand-editing
+the main config — point `SECROUTER_EGRESS_FILE` at a JSON file containing an
+**array** of `security.egress.allowlist` entries (exact same shape):
+
+```jsonc
+// egress-rules.json
+[
+  {
+    "provider": "secllm",
+    "allowedHost": ["gpu1.internal:8000", "gpu2.internal:8000"],
+    "authorizedClassifications": ["UNCLASSIFIED", "CUI"],
+    "authorization": "Deployer-generated — internal enclave inference pool"
+  }
+]
+```
+
+```bash
+SECROUTER_EGRESS_FILE=/etc/secrouter/egress-rules.json
+```
+
+Loaded on every config (re)load and **merged additively** into
+`security.egress.allowlist` — creating `security`/`security.egress` from
+scratch if either is absent, never removing or overwriting a rule already
+there, deduped by (provider, host) so reloading the same file twice never
+duplicates entries. It's audit-evident, not silent: every successful load
+writes an `egress.file_loaded` event to the tamper-evident audit trail (`GET
+/admin/api/audit`) — file path and rule counts included — and a matching line
+is always logged, even when security is disabled. A missing, unreadable, or
+malformed file is a **hard startup/reload failure** (fail loud — this is a
+security control, never a silent fallback), so a typo'd path can't quietly
+leave you with less egress authorization than you think you have. The pool
+being simply unreachable (down, network partition — the per-endpoint breaker
+trips) still gracefully falls back to the demoted prior primary rather than
+hard-failing.
 
 ## Endpoints
 
@@ -182,7 +262,7 @@ src/
   models.ts            Model catalog + pricing
   admin-ui.ts          Admin console SPA (served at /admin)
   metrics.ts           Prometheus registry (served at /metrics)
-  router/              Weighted classifier + tier mappings
+  router/              Weighted classifier + tier mappings + multi-endpoint load balancing (balance.ts)
   security/            ← the security layer
     identity/          OIDC/JWT verification
     policy/            Per-user/group authorization
@@ -191,7 +271,7 @@ src/
     audit/             Hash-chained audit + syslog/SIEM
     store/             node:sqlite (ledger, audit, overrides)
     transport/         TLS/FIPS + AWS SigV4 + Azure Entra
-    resilience.ts      per-provider circuit breaker
+    resilience.ts      per-endpoint circuit breaker
     mcp/               governed MCP tool gateway (deny-by-default tools)
 docs/compliance/       CMMC control matrix + hardening guide
 deploy/                Dockerfile, compose test stack, mocks, runbook

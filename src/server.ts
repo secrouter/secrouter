@@ -16,6 +16,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomUUID } from "node:crypto";
 import { route } from "./router/index.js";
 import { getRoutingConfig } from "./router/config.js";
+import { selectEndpoints, type CursorState } from "./router/balance.js";
 import { buildPricingMap, getModelCatalog } from "./models.js";
 import { forwardRequest, forwardEmbeddingsRequest, TimeoutError, type ChatRequest } from "./provider.js";
 import {
@@ -24,6 +25,7 @@ import {
   resolveResilience,
   CIRCUIT_STATE_CODE,
   type Transition,
+  type ProviderHealth,
 } from "./security/resilience.js";
 import { reloadAuth } from "./auth.js";
 import {
@@ -34,6 +36,9 @@ import {
   getConfigPath,
   getSecurityConfig,
   validateSecurityConfig,
+  endpointsOf,
+  takePendingEgressFileAudit,
+  type FreeRouterConfig,
 } from "./config.js";
 import {
   initSecurity,
@@ -117,43 +122,114 @@ function recordUsageAndAudit(ctx: Ctx, tier: string, usage: UsageResult, outcome
 const ANOMALY_TOKEN_THRESHOLD = parseInt(process.env.SECROUTER_ANOMALY_TOKENS ?? "300000", 10);
 
 // ── Provider circuit breaker (Tier 1 Phase C / SC 3.13.x availability) ──
-// One process-wide breaker. Configured from security.resilience at startup and
-// on reload; the fallback loop skips open providers so a dead upstream fails
-// fast to the next authorized model instead of paying its full timeout forever.
+// One process-wide breaker, keyed per (provider, endpoint). Configured from
+// security.resilience at startup and on reload; the fallback loop skips open
+// endpoints so a dead upstream fails fast to the next authorized endpoint/model
+// instead of paying its full timeout forever.
 const breaker = new CircuitBreaker(resolveResilience());
+
+// ── Load-balancing cursor (multi-endpoint round robin) ──
+// One process-wide cursor, `{ [provider]: nextEndpointIndex }`, shared by every
+// request via router/balance.ts's selectEndpoints(). A provider with a single
+// endpoint never advances past index 0.
+const endpointCursor: CursorState = {};
 
 /** Meter + audit a circuit transition (best-effort: never fails a live request). */
 function onCircuitTransition(tr: Transition): void {
-  metrics.circuitState.set({ provider: tr.provider }, CIRCUIT_STATE_CODE[tr.to]);
-  metrics.circuitTransitionsTotal.inc({ provider: tr.provider, state: tr.to });
-  logger.warn(`circuit ${tr.provider}: ${tr.from} -> ${tr.to} (consecutiveFailures=${tr.consecutiveFailures})`);
+  const labels = { provider: tr.provider, endpoint: String(tr.endpoint) };
+  metrics.circuitState.set(labels, CIRCUIT_STATE_CODE[tr.to]);
+  metrics.circuitTransitionsTotal.inc({ ...labels, state: tr.to });
+  logger.warn(`circuit ${tr.provider}#${tr.endpoint}: ${tr.from} -> ${tr.to} (consecutiveFailures=${tr.consecutiveFailures})`);
   try {
-    getAuditor().emit(audit.providerCircuit(tr.provider, tr.to, tr.from, tr.consecutiveFailures));
+    getAuditor().emit(audit.providerCircuit(tr.provider, tr.to, tr.from, tr.consecutiveFailures, tr.endpoint));
   } catch (err) {
     logger.error(`circuit audit emit failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
+/**
+ * Drain + audit a pending SECROUTER_EGRESS_FILE load (config.ts
+ * applyEgressFileIntake), if the (re)load that just ran produced one. Called
+ * right after initSecurity() — both at startup and from handleReloadConfig()
+ * — so getAuditor() is guaranteed live when security is enabled. PROMINENT by
+ * design: always logged at warn level regardless of security.enabled, and
+ * additionally written to the tamper-evident audit trail (AU 3.3.1/3.3.2)
+ * whenever that trail exists.
+ */
+function emitPendingEgressFileAudit(): void {
+  const pending = takePendingEgressFileAudit();
+  if (!pending) return;
+  logger.warn(
+    `⚠ Loaded ${pending.totalCount} egress rule${pending.totalCount === 1 ? "" : "s"} from ${pending.path} (SECROUTER_EGRESS_FILE) ` +
+      `— ${pending.addedCount} new, merged into security.egress.allowlist (audited, AU 3.3.1/3.3.2)`,
+  );
+  if (!securityEnabled()) return; // no audit store to write into in dev/open mode — the log line above still stands
+  try {
+    getAuditor().emit(audit.egressFileLoaded(pending.path, pending.addedCount, pending.totalCount));
+  } catch (err) {
+    logger.error(`egress-file-load audit emit failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 // ── Active health checks (optional; security.resilience.healthIntervalSec) ──
 // Off by default — air-gap friendly, no background egress unless asked for. When
-// enabled, periodically probe each OpenAI-compatible provider's model list and
-// feed the result into the breaker, so a provider can trip or recover without
-// waiting for live traffic. Uses model-list reachability as the health signal.
+// enabled, periodically probe EVERY endpoint (config.endpointsOf) of each
+// OpenAI-compatible provider's model list and feed the result into the
+// per-endpoint breaker, so an endpoint can trip or recover without waiting for
+// live traffic. Uses model-list reachability as the health signal.
+//
+// The same probe also powers model-awareness for load balancing: each
+// endpoint's returned model-id set is cached here, keyed `${provider}#${idx}`,
+// so the chat forward loop's selectEndpoints() call (server.ts, modelLoop) can
+// skip an endpoint that doesn't (yet, as far as we know) serve the requested
+// model — see the `serves` hook wired in handleChatCompletions. An endpoint
+// with no entry (no successful probe yet) is treated as "might serve it" —
+// never narrowed away — and router/balance.ts's own never-starve-to-zero
+// fallback covers the all-unknown case too.
 let healthTimer: ReturnType<typeof setInterval> | undefined;
+const servedModels = new Map<string, Set<string>>();
 async function runHealthChecks(): Promise<void> {
   const cfg = getConfig();
   for (const [name, p] of Object.entries(cfg.providers ?? {})) {
     if (p.api !== "openai") continue; // model-list probe is only meaningful for OpenAI-compatible
     const authEnvKey = p.auth?.type === "env" ? p.auth.key : undefined;
+    let endpoints: string[];
     try {
-      const r = await probeEndpoint({ baseUrl: p.baseUrl, api: "openai", authEnvKey });
-      const tr = r.ok ? breaker.recordSuccess(name, r.latencyMs) : breaker.recordFailure(name);
-      if (tr) onCircuitTransition(tr);
-    } catch {
-      const tr = breaker.recordFailure(name);
-      if (tr) onCircuitTransition(tr);
+      endpoints = endpointsOf(p);
+    } catch (err) {
+      logger.error(`health check: endpoint config error for provider '${name}': ${err instanceof Error ? err.message : String(err)}`);
+      continue;
+    }
+    for (let idx = 0; idx < endpoints.length; idx++) {
+      try {
+        const r = await probeEndpoint({ baseUrl: endpoints[idx], api: "openai", authEnvKey });
+        const tr = r.ok ? breaker.recordSuccess(name, r.latencyMs, idx) : breaker.recordFailure(name, idx);
+        if (tr) onCircuitTransition(tr);
+        // Only overwrite on a successful, model-list-bearing probe — a
+        // transient failure leaves the last-known served set in place rather
+        // than flapping this endpoint's model-aware eligibility (its
+        // liveness/admission is already governed separately by the breaker).
+        if (r.ok && r.models) servedModels.set(`${name}#${idx}`, new Set(r.models));
+      } catch (err) {
+        const tr = breaker.recordFailure(name, idx);
+        if (tr) onCircuitTransition(tr);
+        logger.error(`health check: probe threw for '${name}#${idx}': ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
+}
+/** Default active-check interval when auto-enabled for a pooled provider (see startHealthChecks). */
+const AUTO_HEALTH_INTERVAL_SEC = 15;
+/** True if any configured provider has more than one endpoint (a load-balanced pool). */
+function hasPooledProvider(cfg: FreeRouterConfig): boolean {
+  for (const p of Object.values(cfg.providers ?? {})) {
+    try {
+      if (endpointsOf(p).length > 1) return true;
+    } catch {
+      /* malformed baseUrl — not this function's concern */
+    }
+  }
+  return false;
 }
 /** (Re)start the health-check timer to match the current resilience config. */
 function startHealthChecks(): void {
@@ -161,15 +237,36 @@ function startHealthChecks(): void {
     clearInterval(healthTimer);
     healthTimer = undefined;
   }
-  const intervalSec = breaker.config().healthIntervalSec;
-  if (!intervalSec || intervalSec <= 0) return; // passive-only (default)
+  const configuredSec = breaker.config().healthIntervalSec;
+  // Explicit config always wins. Otherwise, auto-enable at a conservative
+  // default for a pooled deploy: multi-endpoint load balancing needs liveness
+  // AND model-list polling per endpoint to work well (breaker isolation,
+  // model-aware routing) — waiting for live traffic alone is too slow to
+  // discover a dead or freshly-rebalanced replica. A single-endpoint config
+  // stays passive-only (today's default) unless explicitly enabled.
+  const auto = (!configuredSec || configuredSec <= 0) && hasPooledProvider(getConfig());
+  const intervalSec = auto ? AUTO_HEALTH_INTERVAL_SEC : configuredSec;
+  if (!intervalSec || intervalSec <= 0) return; // passive-only (default; no pooled provider)
   healthTimer = setInterval(() => void runHealthChecks(), intervalSec * 1000);
   healthTimer.unref?.(); // don't keep the process alive for the timer
-  logger.info(`Active provider health checks enabled (every ${intervalSec}s)`);
+  logger.info(
+    auto
+      ? `Active provider health checks auto-enabled (every ${intervalSec}s) — a pooled provider (>1 endpoint) needs liveness + model-list polling for load balancing`
+      : `Active provider health checks enabled (every ${intervalSec}s)`,
+  );
 }
 
-// Load config at startup
-const appConfig = loadConfig();
+// Load config at startup. loadConfig() throws if SECROUTER_EGRESS_FILE is set
+// but missing/unreadable/malformed (config.ts applyEgressFileIntake — a
+// security control fails loud, never silently continues), so this is a
+// refuse-to-start FATAL exactly like the security-config/FIPS checks below.
+let appConfig: FreeRouterConfig;
+try {
+  appConfig = loadConfig();
+} catch (err) {
+  logger.error(`FATAL: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+}
 
 // Validate + initialize the security subsystem (fail-closed: a CUI gateway
 // must refuse to start rather than run in an unsafe configuration).
@@ -187,6 +284,7 @@ try {
   process.exit(1);
 }
 initSecurity(appConfig.security);
+emitPendingEgressFileAudit(); // audit-evident (not silent) if SECROUTER_EGRESS_FILE loaded rules above
 breaker.setConfig(resolveResilience(appConfig.security?.resilience));
 startHealthChecks();
 
@@ -463,7 +561,7 @@ async function handleEmbeddings(req: IncomingMessage, res: ServerResponse, ctx: 
       if (!res.headersSent) sendError(res, 502, "No authorized model is available for this request's data classification", "egress_denied");
       return;
     }
-    metrics.upstreamErrorsTotal.inc({ provider: eProvider });
+    metrics.upstreamErrorsTotal.inc({ provider: eProvider, endpoint: "0" }); // embeddings: endpoint 0 only, no LB yet
     if (isHealthFailure(err)) {
       const tr = breaker.recordFailure(eProvider);
       if (tr) onCircuitTransition(tr);
@@ -699,61 +797,95 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
   let lastError: string = "";
   let egressBlocked = false;
   let attempted = false; // did we actually forward to any provider?
-  let skippedOpen = false; // did we skip a provider because its circuit was open?
+  let skippedOpen = false; // did we skip a provider/endpoint because its circuit was open?
+  modelLoop:
   for (const modelToTry of modelsToTry) {
     const provider = modelToTry.split("/")[0];
-    // Pre-selection (Phase C): skip a provider whose breaker is open so a dead
-    // upstream fails fast to the next authorized model. Once the cooldown elapses
-    // the breaker admits one half-open probe (recording an open->half-open transition).
-    const gate = breaker.admit(provider);
-    if (gate.transition) onCircuitTransition(gate.transition);
-    if (!gate.ok) {
+    const providerEntry = getConfig().providers[provider];
+    let endpointCount = 1;
+    try {
+      endpointCount = providerEntry ? endpointsOf(providerEntry).length : 1;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      logger.error(`Endpoint config error for provider '${provider}': ${lastError}`);
+      continue;
+    }
+
+    // Pre-selection (Phase C+, multi-endpoint): drop endpoints whose breaker is
+    // open, round-robin the survivors (router/balance.ts). Empty means every
+    // endpoint for this provider is open -- fail fast to the next authorized
+    // model, exactly like the old provider-level circuit_open skip.
+    //
+    // Model-aware narrowing: `serves` restricts candidates to the endpoints
+    // known (via the active /models health-check probe, see runHealthChecks)
+    // to actually carry this model — an endpoint with no info yet is kept
+    // (`?? true`), and balance.ts never narrows a request down to zero
+    // candidates even if every endpoint is of unconfirmed support.
+    const bareModel = modelToTry.slice(provider.length + 1);
+    const order = selectEndpoints(provider, endpointCount, breaker, endpointCursor, {
+      onTransition: onCircuitTransition,
+      serves: (idx) => servedModels.get(`${provider}#${idx}`)?.has(bareModel) ?? true,
+    });
+    if (order.length === 0) {
       skippedOpen = true;
       lastError = `circuit open for provider '${provider}'`;
       logger.warn(`circuit open: skip ${modelToTry} — failing fast to next authorized model`);
       continue;
     }
-    const started = Date.now();
-    try {
-      if (modelToTry !== routedModel) {
-        logger.info(`[${stats.requests}] Falling back to ${modelToTry}`);
-        res.setHeader("X-SecRouter-Model", modelToTry);
-      }
-      attempted = true;
-      const usage = await forwardRequest(chatReq, modelToTry, tier, res, stream, requestClassification, ctx.traceparent);
-      const tr = breaker.recordSuccess(provider, Date.now() - started);
-      if (tr) onCircuitTransition(tr); // half-open -> closed (recovery)
-      recordUsageAndAudit(ctx, tier, usage, "ok"); // per-user token/cost accounting
-      metrics.requestDuration.observe({ tier }, (Date.now() - t0) / 1000);
-      return; // success
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
-      if (err instanceof EgressDeniedError) {
-        // Data-residency violation blocked at the choke point — audit and try
-        // the next (possibly authorized) fallback instead of leaking the reason.
-        metrics.egressDeniedTotal.inc();
-        egressBlocked = true;
-        if (ctx.principal && securityEnabled()) {
-          getAuditor().emit(audit.egressDeny(ctx.principal.id, ctx.requestId, err.provider, err.message));
+
+    for (const endpointIdx of order) {
+      // Fresh recheck immediately before use: selectEndpoints's admission pass
+      // can be stale by the time we get here (an earlier endpoint in this same
+      // list may have awaited a full upstream round-trip in between).
+      const gate = breaker.admit(provider, endpointIdx);
+      if (gate.transition) onCircuitTransition(gate.transition);
+      if (!gate.ok) continue; // raced open since selection -- try the next endpoint
+
+      const baseUrl = providerEntry ? endpointsOf(providerEntry)[endpointIdx] : undefined;
+      const started = Date.now();
+      try {
+        if (modelToTry !== routedModel) {
+          logger.info(`[${stats.requests}] Falling back to ${modelToTry}`);
+          res.setHeader("X-SecRouter-Model", modelToTry);
         }
-        logger.error(`⛔ EGRESS DENIED (${modelToTry}): ${lastError}`);
-        continue;
+        attempted = true;
+        const usage = await forwardRequest(chatReq, modelToTry, tier, res, stream, requestClassification, ctx.traceparent, baseUrl);
+        const tr = breaker.recordSuccess(provider, Date.now() - started, endpointIdx);
+        if (tr) onCircuitTransition(tr); // half-open -> closed (recovery)
+        recordUsageAndAudit(ctx, tier, usage, "ok"); // per-user token/cost accounting
+        metrics.requestDuration.observe({ tier }, (Date.now() - t0) / 1000);
+        return; // success
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+        if (err instanceof EgressDeniedError) {
+          // Data-residency violation blocked at the choke point — audit and try
+          // the next (possibly authorized) fallback MODEL instead of leaking the
+          // reason (not a health signal, and not endpoint-specific today).
+          metrics.egressDeniedTotal.inc();
+          egressBlocked = true;
+          if (ctx.principal && securityEnabled()) {
+            getAuditor().emit(audit.egressDeny(ctx.principal.id, ctx.requestId, err.provider, err.message));
+          }
+          logger.error(`⛔ EGRESS DENIED (${modelToTry}#${endpointIdx}): ${lastError}`);
+          continue modelLoop;
+        }
+        metrics.upstreamErrorsTotal.inc({ provider, endpoint: String(endpointIdx) });
+        // Only health failures (timeout / 5xx / connect) count toward the breaker;
+        // a 4xx client error says nothing about provider availability.
+        if (isHealthFailure(err)) {
+          const tr = breaker.recordFailure(provider, endpointIdx);
+          if (tr) onCircuitTransition(tr); // closed -> open at threshold, or failed probe -> open
+        }
+        const isTimeout = err instanceof TimeoutError;
+        if (isTimeout) {
+          stats.timeouts++;
+          logger.error(`\u23f1 TIMEOUT (${modelToTry}#${endpointIdx}): ${lastError} — trying next endpoint...`);
+        } else {
+          logger.error(`Forward error (${modelToTry}#${endpointIdx}): ${lastError}`);
+        }
+        if (res.headersSent) break modelLoop; // can't retry if already streaming
+        // else: fall through and try the next endpoint for this model
       }
-      metrics.upstreamErrorsTotal.inc({ provider });
-      // Only health failures (timeout / 5xx / connect) count toward the breaker;
-      // a 4xx client error says nothing about provider availability.
-      if (isHealthFailure(err)) {
-        const tr = breaker.recordFailure(provider);
-        if (tr) onCircuitTransition(tr); // closed -> open at threshold, or failed probe -> open
-      }
-      const isTimeout = err instanceof TimeoutError;
-      if (isTimeout) {
-        stats.timeouts++;
-        logger.error(`\u23f1 TIMEOUT (${modelToTry}): ${lastError} — trying fallback...`);
-      } else {
-        logger.error(`Forward error (${modelToTry}): ${lastError}`);
-      }
-      if (res.headersSent) break; // can't retry if already streaming
     }
   }
 
@@ -877,6 +1009,7 @@ function handleReloadConfig(_req: IncomingMessage, res: ServerResponse) {
   }
   reloadAuth();
   initSecurity(newCfg.security);
+  emitPendingEgressFileAudit(); // audit-evident (not silent) if SECROUTER_EGRESS_FILE loaded rules above
   breaker.setConfig(resolveResilience(newCfg.security?.resilience));
   startHealthChecks(); // reflect any healthIntervalSec change
   const cfg = getConfig();
@@ -1078,19 +1211,29 @@ function handleAdminConfig(res: ServerResponse) {
 function handleProviderHealth(res: ServerResponse) {
   const cfg = getConfig();
   const snap = breaker.snapshot();
-  const byProvider = new Map(snap.map((h) => [h.provider, h]));
-  const providers = Object.keys(cfg.providers ?? {}).map(
-    (name) =>
-      byProvider.get(name) ?? {
-        provider: name,
-        state: "closed",
-        consecutiveFailures: 0,
-        totalFailures: 0,
-        totalSuccesses: 0,
-      },
-  );
-  // Surface any breaker state for a provider no longer in config (renamed/removed).
-  for (const h of snap) if (!cfg.providers?.[h.provider]) providers.push(h);
+  const byKey = new Map(snap.map((h) => [`${h.provider}#${h.endpoint}`, h]));
+  // One row per configured endpoint (endpointsOf) — a single-baseUrl provider
+  // still yields exactly one row (endpoint 0), matching today's shape plus the
+  // new `endpoint` field.
+  const providers: ProviderHealth[] = [];
+  for (const [name, entry] of Object.entries(cfg.providers ?? {})) {
+    const count = endpointsOf(entry).length;
+    for (let i = 0; i < count; i++) {
+      providers.push(
+        byKey.get(`${name}#${i}`) ?? {
+          provider: name,
+          endpoint: i,
+          state: "closed",
+          consecutiveFailures: 0,
+          totalFailures: 0,
+          totalSuccesses: 0,
+        },
+      );
+    }
+  }
+  // Surface any breaker state for a provider/endpoint no longer in config (renamed/removed).
+  const known = new Set(providers.map((p) => `${p.provider}#${p.endpoint}`));
+  for (const h of snap) if (!known.has(`${h.provider}#${h.endpoint}`)) providers.push(h);
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ resilience: breaker.config(), providers, ts: new Date().toISOString() }, null, 2));
 }

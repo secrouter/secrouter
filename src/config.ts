@@ -12,7 +12,8 @@ import { readFileSync, existsSync, writeFileSync, renameSync, copyFileSync } fro
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { logger } from "./logger.js";
-import type { SecurityConfig } from "./security/types.js";
+import type { SecurityConfig, EgressRule } from "./security/types.js";
+import { allowedHostsOf } from "./security/egress/allowlist.js";
 
 // ─── Config Types ───
 
@@ -26,7 +27,13 @@ export type AuthConfig = {
 };
 
 export type ProviderConfigEntry = {
-  baseUrl: string;
+  /**
+   * One upstream endpoint (today's default — unchanged behavior), or several
+   * for round-robin, breaker-aware load balancing across replicas of the same
+   * backend (e.g. multiple on-prem vLLM instances). Use `endpointsOf()` to
+   * normalize either shape into an ordered, non-empty list.
+   */
+  baseUrl: string | string[];
   api: "anthropic" | "openai" | "bedrock" | "azure";
   headers?: Record<string, string>;
   auth?: AuthConfig;
@@ -171,8 +178,216 @@ function applyOverlay(cfg: FreeRouterConfig): FreeRouterConfig {
   return cfg;
 }
 
+/**
+ * SECROUTER_SECLLM_ENDPOINTS — turnkey intake for a self-hosted SecLLM pool.
+ *
+ * If the env var is set (comma-separated base URLs) this auto-registers a
+ * pooled `secllm` provider (`baseUrl: string[]` — round-robin, breaker-aware
+ * load balancing across the pool; see `endpointsOf()` / `router/balance.ts`)
+ * with bearer-token auth resolved from `SECROUTER_SECLLM_TOKEN`
+ * (`auth: {type:"env", key:"SECROUTER_SECLLM_TOKEN"}` — the same env-based
+ * `AuthConfig` mechanism every other provider uses; see auth.ts's
+ * `getAuth()`/`getEnvAuth()` and provider.ts's `forwardToOpenAI`. An unset
+ * token resolves to no header, matching an open/unauthenticated SecLLM —
+ * back-compat), and rewires SIMPLE/MEDIUM/COMPLEX/REASONING — in both
+ * `tiers` and `agenticTiers` — to route to it (demoting whatever was
+ * previously primary into that tier's fallback list, deduped). If the pool
+ * is simply unreachable (down, network partition — the breaker trips),
+ * requests still gracefully fall back to the demoted prior primary instead
+ * of hard-failing.
+ *
+ * ROUTING + PROVIDER AUTH ONLY — this intake never touches
+ * `security.egress` and never authorizes egress on its own. Egress
+ * authorization is a human compliance decision (which hosts, for which
+ * classifications) and stays explicit: hand-author a `secllm` rule in
+ * `security.egress.allowlist`, or point `SECROUTER_EGRESS_FILE` at a
+ * deployer-generated rules file (see `applyEgressFileIntake` below). Until
+ * one of those exists, a `security.enabled: true` deploy correctly DENIES
+ * traffic to the turnkey-registered `secllm` provider — deny-by-default is
+ * unchanged; this intake only ever wires up routing + credentials, never a
+ * network path.
+ *
+ * NON-DESTRUCTIVE / explicit-config-always-wins: a strict no-op (nothing
+ * below runs) if the loaded config already defines a `secllm` provider, or
+ * if ANY tier (in either `tiers` or `agenticTiers`) already routes —
+ * primary or fallback — to `secllm/*`; either signal means the operator has
+ * already taken ownership of this provider.
+ *
+ * The model ids used (fast/balanced/large/reasoning) are SecLLM's
+ * default-catalog friendly names. A custom SecLLM catalog uses different ids
+ * — hand-configure `providers.secllm` + `tiers`/`agenticTiers` instead of
+ * relying on this env var in that case.
+ */
+function applySecllmEndpointsIntake(cfg: FreeRouterConfig): void {
+  const raw = process.env.SECROUTER_SECLLM_ENDPOINTS;
+  if (!raw) return;
+  const urls = raw.split(",").map((u) => u.trim()).filter(Boolean);
+  if (urls.length === 0) return;
+
+  if (cfg.providers?.secllm) return; // explicit provider config wins
+
+  const SECLLM_PREFIX = "secllm/";
+  const routesToSecllm = (tiers?: Record<string, TierMapping>) =>
+    Object.values(tiers ?? {}).some(
+      (t) => t?.primary?.startsWith(SECLLM_PREFIX) || (t?.fallback ?? []).some((f) => f.startsWith(SECLLM_PREFIX)),
+    );
+  if (routesToSecllm(cfg.tiers) || routesToSecllm(cfg.agenticTiers)) return; // explicit tier routing wins
+
+  // Defensive shallow-clone: `cfg` here may still share nested objects with
+  // the module-level DEFAULT_CONFIG by reference — deepMerge() only recurses
+  // into a key that BOTH the file and the defaults define, so a config file
+  // that omits `providers`/`tiers`/`agenticTiers` entirely leaves those
+  // pointing straight at DEFAULT_CONFIG's own objects. Cloning the top-level
+  // dicts before writing keeps DEFAULT_CONFIG pristine across reloads / other
+  // callers in the same process; every per-tier value below is freshly
+  // constructed (never mutated in place), so a shallow clone is sufficient.
+  cfg.providers = { ...(cfg.providers ?? {}) };
+  cfg.providers.secllm = {
+    api: "openai",
+    baseUrl: urls,
+    auth: { type: "env", key: "SECROUTER_SECLLM_TOKEN" },
+  };
+
+  const TURNKEY_MODELS: Record<string, string> = {
+    SIMPLE: `${SECLLM_PREFIX}fast`,
+    MEDIUM: `${SECLLM_PREFIX}balanced`,
+    COMPLEX: `${SECLLM_PREFIX}large`,
+    REASONING: `${SECLLM_PREFIX}reasoning`,
+  };
+  const rewire = (tiers: Record<string, TierMapping> | undefined): Record<string, TierMapping> => {
+    const fresh: Record<string, TierMapping> = { ...(tiers ?? {}) };
+    for (const [tierName, primary] of Object.entries(TURNKEY_MODELS)) {
+      const prior = tiers?.[tierName];
+      const fallback: string[] = [];
+      if (prior?.primary && prior.primary !== primary) fallback.push(prior.primary);
+      for (const f of prior?.fallback ?? []) {
+        if (f !== primary && !fallback.includes(f)) fallback.push(f);
+      }
+      fresh[tierName] = { primary, fallback };
+    }
+    return fresh;
+  };
+  cfg.tiers = rewire(cfg.tiers);
+  cfg.agenticTiers = rewire(cfg.agenticTiers);
+
+  logger.info(
+    `SECROUTER_SECLLM_ENDPOINTS set — auto-registered provider 'secllm' (${urls.length} endpoint${urls.length === 1 ? "" : "s"}, auth from $SECROUTER_SECLLM_TOKEN) ` +
+      `and turnkey-routed SIMPLE/MEDIUM/COMPLEX/REASONING to it (prior primaries demoted to fallback). ` +
+      `Egress is NOT auto-authorized — add a 'secllm' rule to security.egress.allowlist or set SECROUTER_EGRESS_FILE, or the pool stays denied under security.enabled.`,
+  );
+}
+
+/**
+ * Details of a `SECROUTER_EGRESS_FILE` load, handed off for the caller to
+ * audit once the security subsystem is live. config.ts has no access to the
+ * auditor (it lives in security/*, which itself imports FROM config.ts —
+ * importing it back here would be circular, and audit writes need an open
+ * store this module never has); server.ts drains this via
+ * `takePendingEgressFileAudit()` right after `initSecurity()`, both at
+ * startup and on `/reload-config`.
+ */
+export type EgressFileLoad = {
+  path: string;
+  addedCount: number;
+  totalCount: number;
+};
+
+let _pendingEgressFileAudit: EgressFileLoad | null = null;
+
+/**
+ * Read-and-clear the pending SECROUTER_EGRESS_FILE load (if any) from the
+ * most recent `finalize()`. Returns null when the last (re)load didn't
+ * produce one — SECROUTER_EGRESS_FILE isn't set.
+ */
+export function takePendingEgressFileAudit(): EgressFileLoad | null {
+  const v = _pendingEgressFileAudit;
+  _pendingEgressFileAudit = null;
+  return v;
+}
+
+/**
+ * SECROUTER_EGRESS_FILE — explicit, deployer-authored egress allow-list.
+ *
+ * If set, points at a JSON file containing an ARRAY of `EgressRule` objects
+ * — the exact shape of `security.egress.allowlist` entries (see
+ * `EgressRule` in security/types.ts: `{ provider, allowedHost,
+ * authorizedClassifications, authorization? }`, `allowedHost` a single host
+ * or an array for a pooled provider). Meant for a deployment tool that
+ * generates the enclave's authorized inference hosts as a file rather than
+ * hand-editing the main config. Loaded on every config finalize (startup and
+ * `/reload-config`) and MERGED additively into `security.egress.allowlist`
+ * — creating `security`/`security.egress` if either is absent — never
+ * removing or overwriting an existing rule. Deduped by (provider, host set)
+ * so reloading the same file, or a file that repeats a rule the config file
+ * already declares, never duplicates entries.
+ *
+ * This is EXPLICIT deployer-authored config, not inference — deny-by-default
+ * is unchanged: a host that's neither in the config file's own allowlist nor
+ * in this file stays denied.
+ *
+ * FAIL LOUD: an unset env var is a no-op, but a SET env var naming a
+ * missing/unreadable/malformed file THROWS — this is a security control, and
+ * silently continuing with an incomplete (or silently-stale) allow-list must
+ * never pass for a healthy boot or reload. Neither `finalize()` nor its
+ * callers catch this.
+ */
+function applyEgressFileIntake(cfg: FreeRouterConfig): void {
+  _pendingEgressFileAudit = null; // this finalize() hasn't produced one (yet)
+
+  const path = process.env.SECROUTER_EGRESS_FILE;
+  if (!path) return;
+
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch (err) {
+    throw new Error(`SECROUTER_EGRESS_FILE=${path} could not be read: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`SECROUTER_EGRESS_FILE=${path} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`SECROUTER_EGRESS_FILE=${path} must contain a JSON array of egress rules`);
+  }
+  const rules = parsed as EgressRule[];
+  for (const [i, r] of rules.entries()) {
+    const hasHost = !!r && (Array.isArray(r.allowedHost) ? r.allowedHost.length > 0 : !!r.allowedHost);
+    if (!r || typeof r !== "object" || !r.provider || !hasHost || !Array.isArray(r.authorizedClassifications)) {
+      throw new Error(
+        `SECROUTER_EGRESS_FILE=${path}: rule[${i}] is missing a required field (provider, allowedHost, authorizedClassifications)`,
+      );
+    }
+  }
+
+  cfg.security = cfg.security ? { ...cfg.security } : { enabled: false };
+  const allowlist: EgressRule[] = cfg.security.egress ? [...cfg.security.egress.allowlist] : [];
+  const hostKey = (r: EgressRule) => allowedHostsOf(r).slice().sort().join(",");
+  const seen = new Set(allowlist.map((r) => `${r.provider}::${hostKey(r)}`));
+  let added = 0;
+  for (const r of rules) {
+    const key = `${r.provider}::${hostKey(r)}`;
+    if (seen.has(key)) continue; // dedupe by provider+host — already covered by the config file or an earlier entry in this same file
+    seen.add(key);
+    allowlist.push(r);
+    added++;
+  }
+  cfg.security.egress = { ...(cfg.security.egress ?? {}), allowlist };
+  _pendingEgressFileAudit = { path, addedCount: added, totalCount: rules.length };
+
+  logger.warn(
+    `Loaded ${rules.length} egress rule${rules.length === 1 ? "" : "s"} from ${path} (SECROUTER_EGRESS_FILE)` +
+      (added < rules.length ? ` — ${added} new, ${rules.length - added} already present (deduped)` : ""),
+  );
+}
+
 /** Finalize: snapshot the baseline and derive the effective config. */
 function finalize(baseline: FreeRouterConfig, path: string | null): FreeRouterConfig {
+  applySecllmEndpointsIntake(baseline); // turnkey SECROUTER_SECLLM_ENDPOINTS — routing + provider auth only, no egress
+  applyEgressFileIntake(baseline); // explicit SECROUTER_EGRESS_FILE — merges deployer-authored egress rules
   _fileConfig = baseline;
   _configPath = path;
   _config = applyOverlay(structuredClone(baseline));
@@ -285,10 +500,25 @@ export function loadConfig(): FreeRouterConfig {
 
 /**
  * Reload config from file (for /reload endpoint).
+ *
+ * A reload that throws (e.g. a bad SECROUTER_EGRESS_FILE — see
+ * applyEgressFileIntake's fail-loud contract) restores the previously
+ * EFFECTIVE config before rethrowing: the caller sees the failure loudly
+ * (server.ts's handleReloadConfig turns it into a 500/never-hot-swaps), but
+ * a bad reload attempt must not brick an already-healthy running server —
+ * same "never hot-swap into an unsafe state, keep the running config on
+ * error" philosophy handleReloadConfig already applies for a failed
+ * validateSecurityConfig() check.
  */
 export function reloadConfig(): FreeRouterConfig {
+  const previous = _config;
   _config = null;
-  return loadConfig();
+  try {
+    return loadConfig();
+  } catch (err) {
+    _config = previous;
+    throw err;
+  }
 }
 
 /**
@@ -389,6 +619,22 @@ export function getSanitizedConfig(): Record<string, unknown> {
 }
 
 /**
+ * Normalize a provider's `baseUrl` into an ordered, non-empty list of
+ * endpoints: a single string becomes a one-element list (today's behavior,
+ * unchanged — index 0 is that same endpoint); an array is used as-is, in the
+ * given order (which the round-robin load balancer treats as endpoint
+ * indices 0..n-1). Throws on an empty array — a provider must have at least
+ * one endpoint to be usable.
+ */
+export function endpointsOf(entry: { baseUrl: string | string[] }): string[] {
+  const list = Array.isArray(entry.baseUrl) ? entry.baseUrl : [entry.baseUrl];
+  if (list.length === 0) {
+    throw new Error("provider has no endpoints configured (baseUrl is an empty array)");
+  }
+  return list;
+}
+
+/**
  * Convert config api type to internal provider api type.
  */
 export function toInternalApiType(
@@ -449,7 +695,8 @@ export function validateSecurityConfig(cfg: FreeRouterConfig = getConfig()): str
   // Provider sanity — runs regardless of security.enabled (fail-closed on misconfig).
   for (const [name, p] of Object.entries(cfg.providers ?? {})) {
     if (p.api === "azure") {
-      if (!p.baseUrl) errors.push(`provider '${name}' (azure) requires baseUrl (the Azure resource endpoint)`);
+      const hasBaseUrl = Array.isArray(p.baseUrl) ? p.baseUrl.length > 0 : !!p.baseUrl;
+      if (!hasBaseUrl) errors.push(`provider '${name}' (azure) requires baseUrl (the Azure resource endpoint)`);
       if (p.azureAuth === "entra" && (!p.entra?.tenantId || !p.entra?.clientId || !p.entra?.clientSecretEnv)) {
         errors.push(`provider '${name}' azureAuth="entra" requires entra.tenantId, entra.clientId, and entra.clientSecretEnv`);
       }
@@ -477,7 +724,8 @@ export function validateSecurityConfig(cfg: FreeRouterConfig = getConfig()): str
   } else {
     for (const [i, rule] of sec.egress.allowlist.entries()) {
       if (!rule.provider) errors.push(`security.egress.allowlist[${i}].provider is required`);
-      if (!rule.allowedHost) errors.push(`security.egress.allowlist[${i}].allowedHost is required`);
+      const hasAllowedHost = Array.isArray(rule.allowedHost) ? rule.allowedHost.length > 0 : !!rule.allowedHost;
+      if (!hasAllowedHost) errors.push(`security.egress.allowlist[${i}].allowedHost is required`);
       if (!Array.isArray(rule.authorizedClassifications) || rule.authorizedClassifications.length === 0) {
         errors.push(`security.egress.allowlist[${i}].authorizedClassifications must be non-empty`);
       }

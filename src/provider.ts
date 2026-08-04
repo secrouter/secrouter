@@ -5,7 +5,7 @@
  */
 
 import { getAuth } from "./auth.js";
-import { getConfig, toInternalApiType, supportsAdaptiveThinking as configSupportsAdaptive, getThinkingBudget, getSecurityConfig, isSecurityEnabled } from "./config.js";
+import { getConfig, toInternalApiType, supportsAdaptiveThinking as configSupportsAdaptive, getThinkingBudget, getSecurityConfig, isSecurityEnabled, endpointsOf } from "./config.js";
 import { logger } from "./logger.js";
 import { zeroUsage } from "./security/accounting/usage.js";
 import { checkEgress, EgressDeniedError } from "./security/egress/allowlist.js";
@@ -53,7 +53,8 @@ export class UpstreamError extends Error {
 
 // Provider configs loaded from freerouter.config.json
 export type ProviderConfig = {
-  baseUrl: string;
+  /** All configured endpoints (config.endpointsOf normalizes to this shape upstream). */
+  baseUrl: string | string[];
   api: "anthropic-messages" | "openai-completions" | "bedrock-runtime" | "azure-openai";
   headers?: Record<string, string>;
   region?: string;
@@ -281,12 +282,14 @@ async function forwardToAnthropic(
   tier: string,
   res: ServerResponse,
   stream: boolean,
+  baseUrl?: string,
 ): Promise<UsageResult> {
   const auth = getAuth("anthropic");
   if (!auth?.token) throw new Error("No Anthropic auth token");
 
   const config = getProviderConfig("anthropic");
   if (!config) throw new Error("Anthropic provider not configured");
+  const resolvedBaseUrl = baseUrl ?? endpointsOf(config)[0];
   const { system: systemContent, messages } = convertMessagesToAnthropic(req.messages);
 
   const isOAuth = auth.token!.startsWith("sk-ant-oat");
@@ -337,7 +340,7 @@ async function forwardToAnthropic(
     body.temperature = req.temperature;
   }
 
-  const url = `${config.baseUrl}/v1/messages`;
+  const url = `${resolvedBaseUrl}/v1/messages`;
   const timeoutMs = getTierTimeout(tier);
   logger.info(`-> Anthropic: ${modelName} (tier=${tier}, thinking=${thinkingConfig?.type ?? "off"}, stream=${stream}, tools=${req.tools?.length ?? 0}, timeout=${timeoutMs / 1000}s)`);
 
@@ -594,9 +597,11 @@ async function forwardToOpenAI(
   res: ServerResponse,
   stream: boolean,
   traceparent?: string,
+  baseUrl?: string,
 ): Promise<UsageResult> {
   const config = getProviderConfig(provider);
   if (!config) throw new Error(`Unknown provider: ${provider}`);
+  const resolvedBaseUrl = baseUrl ?? endpointsOf(config)[0];
 
   // Auth is optional for OpenAI-compatible endpoints: many self-hosted / on-prem
   // servers (vLLM, Ollama, llama.cpp, TGI) require no API key. Send the Bearer
@@ -621,8 +626,8 @@ async function forwardToOpenAI(
   // OpenAI-compatible endpoints (incl. Bedrock's /openai/v1) use a flat path.
   const isAzure = config.api === "azure-openai";
   const url = isAzure
-    ? `${config.baseUrl.replace(/\/+$/, "")}/openai/deployments/${encodeURIComponent(modelName)}/chat/completions?api-version=${config.apiVersion ?? "2024-10-21"}`
-    : `${config.baseUrl}/chat/completions`;
+    ? `${resolvedBaseUrl.replace(/\/+$/, "")}/openai/deployments/${encodeURIComponent(modelName)}/chat/completions?api-version=${config.apiVersion ?? "2024-10-21"}`
+    : `${resolvedBaseUrl}/chat/completions`;
   logger.info(`-> ${provider}: ${modelName} (tier=${tier}, stream=${stream}${isAzure ? ", azure" : ""})`);
 
   // Auth: Azure uses the `api-key` header or an Entra bearer token; everything
@@ -816,6 +821,7 @@ async function forwardToBedrock(
   tier: string,
   res: ServerResponse,
   stream: boolean,
+  baseUrl?: string,
 ): Promise<UsageResult> {
   const config = getProviderConfig(provider);
   if (!config) throw new Error(`Unknown provider: ${provider}`);
@@ -852,8 +858,8 @@ async function forwardToBedrock(
   }
   if (req.temperature !== undefined && !thinkingConfig) body.temperature = req.temperature;
 
-  const baseUrl = config.baseUrl.replace(/\/$/, "");
-  const url = `${baseUrl}/model/${encodeURIComponent(modelName)}/invoke`;
+  const resolvedBaseUrl = (baseUrl ?? endpointsOf(config)[0]).replace(/\/$/, "");
+  const url = `${resolvedBaseUrl}/model/${encodeURIComponent(modelName)}/invoke`;
   const bodyStr = JSON.stringify(body);
   const signedHeaders = signRequest({
     method: "POST",
@@ -941,6 +947,8 @@ export async function forwardRequest(
   stream: boolean,
   classification?: string,
   traceparent?: string,
+  /** Which of the provider's endpoints (config.endpointsOf) to use. Defaults to endpoint 0. */
+  baseUrl?: string,
 ): Promise<UsageResult> {
   const { provider, model } = parseModelId(routedModel);
 
@@ -948,16 +956,19 @@ export async function forwardRequest(
   if (!providerConfig) {
     throw new Error(`Unsupported provider: ${provider}`);
   }
+  const effectiveBaseUrl = baseUrl ?? endpointsOf(providerConfig)[0];
 
   // ── Egress deny-by-default + data-residency gate (the network choke point) ──
   // No code path reaches the network without passing this when security is on.
+  // Checked against the ACTUAL endpoint this attempt will use, so a
+  // multi-endpoint provider's replicas are each subject to their own host rule.
   if (isSecurityEnabled()) {
     const sec = getSecurityConfig()!;
     const host = (() => {
       try {
-        return new URL(providerConfig.baseUrl).host;
+        return new URL(effectiveBaseUrl).host;
       } catch {
-        return providerConfig.baseUrl;
+        return effectiveBaseUrl;
       }
     })();
     const dataClass = classification ?? sec.classification?.default ?? "UNCLASSIFIED";
@@ -969,12 +980,12 @@ export async function forwardRequest(
   }
 
   if (providerConfig.api === "anthropic-messages") {
-    return forwardToAnthropic(chatReq, model, tier, res, stream);
+    return forwardToAnthropic(chatReq, model, tier, res, stream, effectiveBaseUrl);
   }
   if (providerConfig.api === "bedrock-runtime") {
-    return forwardToBedrock(chatReq, provider, model, tier, res, stream);
+    return forwardToBedrock(chatReq, provider, model, tier, res, stream, effectiveBaseUrl);
   }
-  return forwardToOpenAI(chatReq, provider, model, tier, res, stream, traceparent);
+  return forwardToOpenAI(chatReq, provider, model, tier, res, stream, traceparent, effectiveBaseUrl);
 }
 
 /**
@@ -993,14 +1004,16 @@ export async function forwardEmbeddingsRequest(
   const { provider, model } = parseModelId(routedModel);
   const providerConfig = getProviderConfig(provider);
   if (!providerConfig) throw new Error(`Unsupported provider: ${provider}`);
+  // Embeddings don't load-balance across endpoints (yet) — always endpoint 0.
+  const embeddingsBaseUrl = endpointsOf(providerConfig)[0];
 
   if (isSecurityEnabled()) {
     const sec = getSecurityConfig()!;
     const host = (() => {
       try {
-        return new URL(providerConfig.baseUrl).host;
+        return new URL(embeddingsBaseUrl).host;
       } catch {
-        return providerConfig.baseUrl;
+        return embeddingsBaseUrl;
       }
     })();
     const dataClass = classification ?? sec.classification?.default ?? "UNCLASSIFIED";
@@ -1018,8 +1031,8 @@ export async function forwardEmbeddingsRequest(
 
   const auth = getAuth(provider);
   const url = isAzure
-    ? `${providerConfig.baseUrl.replace(/\/+$/, "")}/openai/deployments/${encodeURIComponent(model)}/embeddings?api-version=${providerConfig.apiVersion ?? "2024-10-21"}`
-    : `${providerConfig.baseUrl}/embeddings`;
+    ? `${embeddingsBaseUrl.replace(/\/+$/, "")}/openai/deployments/${encodeURIComponent(model)}/embeddings?api-version=${providerConfig.apiVersion ?? "2024-10-21"}`
+    : `${embeddingsBaseUrl}/embeddings`;
   let authHeaders: Record<string, string> = {};
   if (isAzure && providerConfig.azureAuth === "entra") {
     if (!providerConfig.entra) throw new Error(`Azure provider '${provider}' uses azureAuth="entra" but has no entra config`);

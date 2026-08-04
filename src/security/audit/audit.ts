@@ -142,16 +142,30 @@ export const audit = {
     outcome: "deny",
     detail,
   }),
+  /**
+   * SECROUTER_EGRESS_FILE load (config.ts applyEgressFileIntake) — an
+   * explicit, deployer-authored egress-rule file was read and merged into
+   * `security.egress.allowlist`. Made audit-evident rather than a silent
+   * config-assembly side effect. Emitted on every (re)load where the env var
+   * is set and the file loads successfully (even if every rule in it was
+   * already present / deduped) — each (re)load is its own auditable event.
+   */
+  egressFileLoaded: (path: string, addedCount: number, totalCount: number): AuditInput => ({
+    type: "egress.file_loaded",
+    outcome: "authorized",
+    detail: { path, addedCount, totalCount, source: "SECROUTER_EGRESS_FILE" },
+  }),
   /** Provider circuit-breaker transition — an auditable availability/ops change (SC/AU). */
   providerCircuit: (
     provider: string,
     to: string,
     from: string,
     consecutiveFailures: number,
+    endpoint = 0,
   ): AuditInput => ({
     type: "provider.circuit",
     outcome: to === "closed" ? "recovered" : to === "open" ? "open" : "probe",
-    detail: { provider, state: to, from, consecutiveFailures },
+    detail: { provider, endpoint, state: to, from, consecutiveFailures },
   }),
   /**
    * A proxied MCP tool call (Phase D). Metadata ONLY — a SHA-256 of the arguments

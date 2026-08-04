@@ -72,6 +72,11 @@ async function main() {
         azurekey: { api: "azure", baseUrl: "https://res.openai.azure.us", apiVersion: "2024-10-21", azureAuth: "api-key", auth: { type: "env", key: "AZ_KEY" } },
         azureentra: { api: "azure", baseUrl: "https://res.openai.azure.us", apiVersion: "2025-01-01", azureAuth: "entra", entra: { tenantId: "tid", clientId: "cid", clientSecretEnv: "AZ_SECRET", authority: "https://login.microsoftonline.us", scope: "https://cognitiveservices.azure.us/.default" } },
         bedrock: { api: "openai", baseUrl: "https://bedrock-runtime.us-gov-west-1.amazonaws.com/openai/v1", auth: { type: "env", key: "BR_KEY" } },
+        // Same shape the SECROUTER_SECLLM_ENDPOINTS turnkey intake registers
+        // (config.ts applySecllmEndpointsIntake) — proves the generic
+        // env-auth path (not a secllm-specific special case) both sends the
+        // header when the token resolves and omits it when it doesn't.
+        secllm: { api: "openai", baseUrl: "http://127.0.0.1:1/v1", auth: { type: "env", key: "SECROUTER_SECLLM_TOKEN" } },
       },
       tiers: { SIMPLE: { primary: "azurekey/gpt-4o", fallback: [] }, MEDIUM: { primary: "azurekey/gpt-4o", fallback: [] }, COMPLEX: { primary: "azurekey/gpt-4o", fallback: [] }, REASONING: { primary: "azurekey/gpt-4o", fallback: [] } },
       auth: { default: "profiles", profiles: { type: "profiles", profilesPath: join(dir, "auth.json") } },
@@ -93,6 +98,19 @@ async function main() {
   await forwardRequest(chat, "bedrock/openai.gpt-oss-120b-1:0", "MEDIUM", fakeRes(), false);
   ok("bedrock-openai routes via the OpenAI path to /openai/v1/chat/completions", last().url === "https://bedrock-runtime.us-gov-west-1.amazonaws.com/openai/v1/chat/completions", last().url);
   ok("bedrock-openai uses Authorization: Bearer <api key>", last().headers["Authorization"] === "Bearer bedrock-api-key");
+
+  console.log("\nSecLLM provider auth (Part 3: token from SECROUTER_SECLLM_TOKEN, same generic env-auth path):");
+  process.env.SECROUTER_SECLLM_TOKEN = "secllm-secret-token";
+  await forwardRequest(chat, "secllm/fast", "SIMPLE", fakeRes(), false);
+  ok("SECROUTER_SECLLM_TOKEN set -> Authorization: Bearer <token> sent on forward", last().headers["Authorization"] === "Bearer secllm-secret-token", JSON.stringify(last().headers));
+
+  delete process.env.SECROUTER_SECLLM_TOKEN;
+  await forwardRequest(chat, "secllm/fast", "SIMPLE", fakeRes(), false);
+  ok(
+    "SECROUTER_SECLLM_TOKEN unset -> no Authorization header at all (open SecLLM, back-compat)",
+    !("Authorization" in last().headers),
+    JSON.stringify(last().headers),
+  );
 
   clearEntraCache();
   entraFetches = 0;

@@ -102,6 +102,40 @@ console.log("\nProbe model-list discovery:");
   ok("public host blocked before any fetch (SSRF guard)", blocked.ok === false && /in-boundary/.test(blocked.error ?? ""));
 }
 
+console.log("\nProbe auth header (Part 3: the /v1/models health-check poll must send resolved provider auth):");
+{
+  // server.ts's runHealthChecks() calls probeEndpoint() with authEnvKey
+  // derived from the provider's `auth: {type:"env", key}` — this is the exact
+  // call shape it uses. A token-protected SecLLM would 401 an unauthenticated
+  // poll (breaking model-awareness / breaker liveness) without this.
+  const calls: { url: string; headers: Record<string, string> }[] = [];
+  const orig = globalThis.fetch;
+  globalThis.fetch = (async (u: unknown, init?: RequestInit) => {
+    calls.push({ url: String(u), headers: (init?.headers as Record<string, string>) ?? {} });
+    return new Response(JSON.stringify({ object: "list", data: [{ id: "m-a" }] }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    process.env.SECROUTER_SECLLM_TOKEN = "poll-secret-token";
+    await probeEndpoint({ baseUrl: "http://vllm.internal:9000", api: "openai", authEnvKey: "SECROUTER_SECLLM_TOKEN" });
+    ok(
+      "authEnvKey resolved -> the /models poll carries Authorization: Bearer <token>",
+      calls.some((c) => c.headers["Authorization"] === "Bearer poll-secret-token"),
+      JSON.stringify(calls.map((c) => c.headers)),
+    );
+
+    calls.length = 0;
+    delete process.env.SECROUTER_SECLLM_TOKEN;
+    await probeEndpoint({ baseUrl: "http://vllm.internal:9000", api: "openai", authEnvKey: "SECROUTER_SECLLM_TOKEN" });
+    ok(
+      "authEnvKey set but the env var is unset -> no Authorization header on the poll (open SecLLM, back-compat)",
+      calls.length > 0 && calls.every((c) => !("Authorization" in c.headers)),
+      JSON.stringify(calls.map((c) => c.headers)),
+    );
+  } finally {
+    globalThis.fetch = orig;
+  }
+}
+
 console.log("\nConfig file writer (atomic, validated, backed up):");
 const tmp = join(tmpdir(), `secrouter-endpoints-${process.pid}-${Date.now()}.json`);
 const base = {
