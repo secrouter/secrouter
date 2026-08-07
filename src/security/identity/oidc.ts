@@ -150,7 +150,7 @@ export class OidcProvider implements IdentityProvider {
     const roles = toStringArray(getByPath(payload, this.cfg.rolesClaim ?? "roles"));
     if (isServiceSubject && !roles.includes("service")) roles.push("service");
 
-    return {
+    const base: Principal = {
       id: sub,
       email: typeof payload["email"] === "string" ? payload["email"] : undefined,
       displayName:
@@ -163,6 +163,66 @@ export class OidcProvider implements IdentityProvider {
       authTime: typeof payload["auth_time"] === "number" ? payload["auth_time"] : undefined,
       jti: typeof payload.jti === "string" ? payload.jti : undefined,
       claims: payload as Record<string, unknown>,
+    };
+
+    // ── On-behalf-of delegation (trusted front-end, AC 3.1.x) ──
+    // Applied AFTER every token check above. Only a caller whose own `sub` is in
+    // delegatingSubjects may swap identity to a forwarded end-user; for everyone
+    // else the header is inert, so there is no impersonation path. See the field
+    // doc in security/types.ts.
+    return this.applyDelegation(base, headers);
+  }
+
+  /** Read a single header value case-insensitively (Node lowercases, but be robust). */
+  private headerValue(
+    headers: Record<string, string | string[] | undefined>,
+    name: string,
+  ): string | null {
+    const raw = headers[name] ?? headers[name.toLowerCase()];
+    const v = Array.isArray(raw) ? raw[0] : raw;
+    return v ? String(v).trim() : null;
+  }
+
+  /**
+   * If the authenticated caller is a trusted delegator and forwards an acting
+   * end-user, return a principal for THAT user (policy/usage/audit attribute to
+   * them) tagged with `delegatedBy`. Otherwise return the caller unchanged.
+   */
+  private applyDelegation(
+    base: Principal,
+    headers: Record<string, string | string[] | undefined>,
+  ): Principal {
+    const delegators = this.cfg.delegatingSubjects ?? [];
+    if (delegators.length === 0 || !delegators.includes(base.id)) return base;
+
+    const userHeader = (this.cfg.actingUserHeader ?? "x-sec-acting-user").toLowerCase();
+    const actingUser = this.headerValue(headers, userHeader);
+    if (!actingUser) return base; // no delegation requested — the service acts as itself
+
+    // A forwarded identity from a trusted service is authoritative, but never
+    // trust its shape: reject control chars / absurd length (defense in depth
+    // against a header-injection or a misconfigured forwarder).
+    if (actingUser.length > 256 || /[\u0000-\u001f\u007f]/.test(actingUser)) {
+      throw new AuthError("delegation_invalid");
+    }
+    const groupsHeader = (this.cfg.actingGroupsHeader ?? "x-sec-acting-groups").toLowerCase();
+    const actingGroups = toStringArray(this.headerValue(headers, groupsHeader));
+    const looksEmail = /^[^@\s]+@[^@\s]+$/.test(actingUser);
+
+    return {
+      id: actingUser,
+      email: looksEmail ? actingUser : undefined,
+      displayName: actingUser,
+      groups: actingGroups,
+      roles: [],
+      // The end-user's MFA is enforced at the delegator's own OIDC login (SecSSO),
+      // not re-attested from this service token — carry the service token's value
+      // and let `delegatedBy` in the audit make the trust chain explicit.
+      mfa: base.mfa,
+      jti: base.jti,
+      delegatedBy: base.id,
+      // `act` is the RFC 8693 actor claim: who is acting for this subject.
+      claims: { sub: actingUser, act: { sub: base.id }, delegated_by: base.id },
     };
   }
 }

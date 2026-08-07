@@ -4,8 +4,10 @@
  *
  * Covers: valid token, no credential, expired, wrong audience, alg=none
  * rejection (alg-confusion defense), MFA assertion, jti replay, the
- * service-subject MFA/acr exemption (security.oidc.serviceSubjects), and
- * its config validation.
+ * service-subject MFA/acr exemption (security.oidc.serviceSubjects), the
+ * on-behalf-of delegation path (security.oidc.delegatingSubjects — end-user
+ * attribution, act-as-self, the non-delegator anti-impersonation guarantee,
+ * malformed-header rejection), and their config validation.
  */
 
 import { createServer, type Server } from "node:http";
@@ -216,6 +218,75 @@ async function main() {
   ok("serviceSubjects not an array → error", serviceSubjectsErrors("svc-1").length === 1);
   ok("serviceSubjects with an empty string → error", serviceSubjectsErrors([""]).length === 1);
   ok("serviceSubjects with a non-string entry → error", serviceSubjectsErrors([123]).length === 1);
+
+  // ── On-behalf-of delegation (security.oidc.delegatingSubjects) ──
+  console.log("\nOn-behalf-of delegation:");
+  const delegProvider = new OidcProvider(
+    {
+      issuer: ISS,
+      audience: AUD,
+      jwksUri,
+      requireMfa: true,
+      serviceSubjects: ["svc-ui"],
+      delegatingSubjects: ["svc-ui"],
+    },
+    store,
+  );
+  const svcUiTok = await mint({ jti: "ui-1" }, { sub: "svc-ui" });
+
+  // A trusted delegator forwards an acting user → the principal BECOMES that end-user.
+  const deleg = await delegProvider.authenticate({
+    ...bearer(svcUiTok),
+    "x-sec-acting-user": "alice@x.gov",
+    "x-sec-acting-groups": "analysts, cui-cleared",
+  });
+  ok("delegated principal id is the END-USER (policy/usage attribute to them)", deleg?.id === "alice@x.gov");
+  ok("delegated email inferred from an email-shaped id", deleg?.email === "alice@x.gov");
+  ok(
+    "delegated groups parsed from the forwarded header",
+    JSON.stringify(deleg?.groups) === JSON.stringify(["analysts", "cui-cleared"]),
+  );
+  ok("delegatedBy names the trusted service (audit chain)", deleg?.delegatedBy === "svc-ui");
+  ok(
+    "RFC 8693 `act` claim records the actor",
+    (deleg?.claims as { act?: { sub?: string } }).act?.sub === "svc-ui",
+  );
+
+  // Same delegator, NO acting-user header → it acts as ITSELF (a service can still call directly).
+  const asSelf = await delegProvider.authenticate(bearer(svcUiTok));
+  ok("delegator without the header acts as itself", asSelf?.id === "svc-ui" && !asSelf?.delegatedBy);
+
+  // The trust anchor is the CALLER's sub: an ordinary user that sets the header cannot
+  // impersonate anyone — their own identity stands, header ignored (no escalation path).
+  const userTok = await mint({ amr: ["otp"], groups: ["interns"], jti: "u-1" }, { sub: "user-77" });
+  const spoof = await delegProvider.authenticate({ ...bearer(userTok), "x-sec-acting-user": "ceo@x.gov" });
+  ok("non-delegator CANNOT impersonate — own identity stands", spoof?.id === "user-77" && !spoof?.delegatedBy);
+
+  // A trusted delegator still can't forward a malformed identity (header-injection defense).
+  await expectAuthError("acting-user with a control char → delegation_invalid", "delegation_invalid", () =>
+    delegProvider.authenticate({ ...bearer(svcUiTok), "x-sec-acting-user": "bad\nuser" }),
+  );
+  await expectAuthError("acting-user over 256 chars → delegation_invalid", "delegation_invalid", () =>
+    delegProvider.authenticate({ ...bearer(svcUiTok), "x-sec-acting-user": "x".repeat(300) }),
+  );
+
+  const delegatingSubjectsErrors = (delegatingSubjects: unknown) =>
+    validateSecurityConfig({
+      ...secBase,
+      security: { ...secBase.security, oidc: { ...secBase.security.oidc, delegatingSubjects } },
+    } as unknown as FreeRouterConfig).filter((e) => /delegatingSubjects/.test(e));
+  ok("delegatingSubjects absent → no errors", delegatingSubjectsErrors(undefined).length === 0);
+  ok("delegatingSubjects valid strings → no errors", delegatingSubjectsErrors(["svc-ui"]).length === 0);
+  ok("delegatingSubjects not an array → error", delegatingSubjectsErrors("svc-ui").length === 1);
+  ok("delegatingSubjects with an empty string → error", delegatingSubjectsErrors([""]).length === 1);
+
+  const actingHeaderErrors = (oidcExtra: Record<string, unknown>) =>
+    validateSecurityConfig({
+      ...secBase,
+      security: { ...secBase.security, oidc: { ...secBase.security.oidc, ...oidcExtra } },
+    } as unknown as FreeRouterConfig).filter((e) => /actingUserHeader|actingGroupsHeader/.test(e));
+  ok("actingUserHeader empty string → error", actingHeaderErrors({ actingUserHeader: "" }).length === 1);
+  ok("actingGroupsHeader valid string → no error", actingHeaderErrors({ actingGroupsHeader: "x-groups" }).length === 0);
 
   store.close();
   jwksServer.close();

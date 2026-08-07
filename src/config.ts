@@ -726,6 +726,22 @@ export function validateSecurityConfig(cfg: FreeRouterConfig = getConfig()): str
         errors.push("security.oidc.serviceSubjects entries must be non-empty strings (exact `sub` claims)");
       }
     }
+    // On-behalf-of delegation allow-list — same fail-closed shape check. A
+    // delegator normally is ALSO a serviceSubject (it authenticates
+    // non-interactively); see OidcConfig.delegatingSubjects.
+    if (sec.oidc.delegatingSubjects !== undefined) {
+      if (!Array.isArray(sec.oidc.delegatingSubjects)) {
+        errors.push("security.oidc.delegatingSubjects must be an array of subject (sub) strings");
+      } else if (sec.oidc.delegatingSubjects.some((s) => typeof s !== "string" || s.trim() === "")) {
+        errors.push("security.oidc.delegatingSubjects entries must be non-empty strings (exact `sub` claims)");
+      }
+    }
+    for (const hdr of ["actingUserHeader", "actingGroupsHeader"] as const) {
+      const v = sec.oidc[hdr];
+      if (v !== undefined && (typeof v !== "string" || v.trim() === "")) {
+        errors.push(`security.oidc.${hdr} must be a non-empty header name`);
+      }
+    }
   }
 
   // Egress deny-by-default (Feature 3) — the allow-list must exist and be non-empty.
