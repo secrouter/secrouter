@@ -605,10 +605,13 @@ export const ADMIN_HTML = `<!doctype html>
       rows.forEach(function(e){
         var cls = e.outcome==="deny"?"bad":(e.type==="anomaly"?"warn":"");
         var tid = (e.detail && e.detail.traceId) || "";
+        var via = e.detail && e.detail.delegatedBy;   // on-behalf-of: the trusted UI service
+        var principalCell = el("td",{text:e.principalId||"—"});
+        if (via) principalCell.appendChild(el("span",{class:"muted",style:"font-size:11px;",title:"delegated by "+via,text:" · via "+via}));
         t.appendChild(el("tr",{},[
           el("td",{class:"muted",text:(e.ts||"").replace("T"," ").slice(0,19)}),
           el("td",{}, el("span",{class:"pill "+cls,text:e.type})),
-          el("td",{text:e.principalId||"—"}), el("td",{text:e.model||"—"}),
+          principalCell, el("td",{text:e.model||"—"}),
           el("td",{text:e.outcome||"—"}),
           el("td",{class:"muted",title:tid,text:tid?tid.slice(0,8):"—"})
         ]));

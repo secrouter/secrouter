@@ -1537,6 +1537,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
           requestId,
           mfa: ctx.principal.mfa,
           groups: ctx.principal.groups,
+          // Present only for on-behalf-of requests: the trusted service that
+          // authenticated and vouched for this end-user (completes the chain).
+          ...(ctx.principal.delegatedBy ? { delegatedBy: ctx.principal.delegatedBy } : {}),
           traceId,
         }),
       );

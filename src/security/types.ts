@@ -28,6 +28,15 @@ export type Principal = {
   authTime?: number;
   /** Token id (`jti`) for replay tracking (IA 3.5.4). */
   jti?: string;
+  /**
+   * Set when this principal was resolved via on-behalf-of delegation: the `sub`
+   * of the trusted service (a `security.oidc.delegatingSubjects` member, e.g. a
+   * governed chat UI) that authenticated with its own credential and forwarded
+   * this end-user's identity. `id`/`groups`/policy/usage all attribute to the
+   * END-USER; this names the actor that vouched, recorded in the auth.success
+   * audit for a complete accountability chain (AC 3.1.x / AU 3.3.x).
+   */
+  delegatedBy?: string;
   /** Raw validated claims (metadata only — never logged as CUI). */
   claims: Record<string, unknown>;
 };
@@ -76,6 +85,30 @@ export type OidcConfig = {
    * `security.policy.users[<sub>]`.
    */
   serviceSubjects?: string[];
+  /**
+   * On-behalf-of delegation for a TRUSTED front-end service (AC 3.1.x). Exact
+   * `sub`s (normally also `serviceSubjects`) permitted to act for an end-user:
+   * the service authenticates with its OWN client-credentials token and forwards
+   * the signed-in user's identity in `actingUserHeader`. SecRouter then replaces
+   * the principal with that END-USER — so policy, budgets, quotas, and the usage
+   * ledger all attribute to the real person — while recording the delegating
+   * service as `delegatedBy` in the auth.success audit. Built for a governed chat
+   * UI (SecAssist/LibreChat) that logs users in via OIDC but cannot forward each
+   * user's own bearer to the gateway.
+   *
+   * TRUST MODEL: the forwarded header is honored ONLY when the authenticated
+   * caller's `sub` is in this list — a normal user's token carrying the header is
+   * ignored (their own identity stands), so there is no impersonation path for
+   * non-delegators. The trust anchor is the service credential itself; scope it
+   * tightly and protect it like any secret. The delegated user's MFA is enforced
+   * at the front-end's own OIDC login (SecSSO), not re-attested here. Absent/empty
+   * ⇒ no delegation; unchanged behavior.
+   */
+  delegatingSubjects?: string[];
+  /** Header a delegator forwards the acting end-user in (default `x-sec-acting-user`; email or stable id). */
+  actingUserHeader?: string;
+  /** Optional header carrying the acting user's groups, comma/space-separated (default `x-sec-acting-groups`). */
+  actingGroupsHeader?: string;
   /**
    * Enforce SINGLE-USE per `jti` (replay cache). Default off. WARNING: standard
    * OIDC access tokens are multi-use bearer tokens — enabling this rejects the
