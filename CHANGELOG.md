@@ -9,9 +9,11 @@
   **When exactly one model is live, every non-gated request goes to it**; when several are live it
   prefers a live model from the request's own tier chain. Explicit-model requests (`model` ≠ `auto`)
   and policy-pinned/downgraded requests are gates and are never re-steered. Active liveness polling
-  now auto-enables for a **loopback** endpoint (a local SecLLM) as well as for pooled providers —
-  polling localhost isn't egress, so it stays air-gap-safe; a single remote endpoint is still opt-in
-  via `security.resilience.healthIntervalSec`.
+  now auto-enables for a **loopback** endpoint (a local SecLLM), for pooled providers, and for the
+  self-hosted **SecLLM turnkey pool** (`SECROUTER_SECLLM_ENDPOINTS`) even when SecDeploy addresses it
+  by FQDN — so it's turnkey for a provisioned suite. Polling those isn't egress (they're inside the
+  boundary); a single remote third-party endpoint is still opt-in via
+  `security.resilience.healthIntervalSec`.
 
 ## [1.0.0] — SecRouter
 

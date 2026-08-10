@@ -267,10 +267,13 @@ A request is **gated** (never re-steered) when the caller pins a concrete `model
 `auto`), or when a per-user policy denies/downgrades to a specific model — those decisions win.
 
 Liveness comes from the same active `/v1/models` probe that powers multi-endpoint load balancing.
-It **auto-enables** for a pooled provider (>1 endpoint) *and* for any **loopback** endpoint (a local
-SecLLM at `127.0.0.1`) — polling localhost isn't egress, so it's safe in an air-gapped deployment. A
-single **remote** endpoint stays passive by default; set `security.resilience.healthIntervalSec` to
-actively probe it too. Steer decisions are logged and carried in the `X-SecRouter-Reasoning` header.
+It **auto-enables** for (a) a pooled provider (>1 endpoint), (b) any **loopback** endpoint (a local
+SecLLM at `127.0.0.1`), and (c) the self-hosted **SecLLM turnkey pool** (`SECROUTER_SECLLM_ENDPOINTS`)
+even when SecDeploy addresses it by FQDN — that pool is the deployment's own inference tier, inside
+the boundary and already egress-authorized, so keeping liveness on it is exactly what's wanted. A
+single **remote third-party** endpoint stays passive by default (no background egress); set
+`security.resilience.healthIntervalSec` to actively probe it too. Steer decisions are logged and
+carried in the `X-SecRouter-Reasoning` header.
 
 ## Project structure
 

@@ -75,6 +75,28 @@ export function isLoopbackUrl(url: string): boolean {
 }
 
 /**
+ * In AUTO mode (no explicit `security.resilience.healthIntervalSec`), should a provider's
+ * endpoints be actively health-probed? True for:
+ *   - a **pool** (>1 endpoint) — multi-endpoint load balancing needs per-replica liveness;
+ *   - any **loopback** endpoint — a local backend; polling localhost isn't egress; or
+ *   - the self-hosted **SecLLM turnkey-intake pool** (`name === "secllm"` && `secllmIntakeActive`,
+ *     i.e. `SECROUTER_SECLLM_ENDPOINTS` is set) — the deployment's own inference tier, inside the
+ *     accreditation boundary and already egress-authorized, and the pool health-aware routing needs
+ *     liveness for. SecDeploy addresses it by FQDN even single-host, so the loopback signal alone
+ *     wouldn't catch a single-instance pool.
+ * A single **remote third-party** endpoint stays passive (returns false) unless the operator opts in
+ * explicitly — preserving the air-gap "no background egress unless asked" default. PURE.
+ */
+export function autoProbeProvider(
+  name: string,
+  endpoints: readonly string[],
+  secllmIntakeActive: boolean,
+): boolean {
+  if (name === "secllm" && secllmIntakeActive) return true;
+  return endpoints.length > 1 || endpoints.some(isLoopbackUrl);
+}
+
+/**
  * Pure core of server.ts's `liveModels()`: fold the per-endpoint served-model sets (keyed
  * `provider#idx`, as populated by the /v1/models health probe) into the set of fully-qualified
  * `provider/model` ids that are live — excluding any endpoint whose circuit is currently open.

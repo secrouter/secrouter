@@ -3,7 +3,7 @@
  * Pure functions (src/router/health.ts) — no server, no network, fully deterministic.
  */
 
-import { healthAwareModel, isLoopbackUrl, computeLiveModels } from "../../src/router/health.js";
+import { healthAwareModel, isLoopbackUrl, computeLiveModels, autoProbeProvider } from "../../src/router/health.js";
 
 let pass = 0;
 let fail = 0;
@@ -103,6 +103,23 @@ console.log("\ncomputeLiveModels — an open endpoint contributes nothing:");
   ]);
   const out = computeLiveModels(served, new Set(["secllm#1"])); // endpoint 1 circuit open
   ok("open endpoint's model excluded", out.has("secllm/fast") && !out.has("secllm/balanced"), [...out].join(","));
+}
+
+console.log("\nautoProbeProvider — what's safe to actively probe in auto mode:");
+{
+  // Pooled provider (>1 endpoint): probe regardless of locality (LB needs per-replica liveness).
+  ok("pooled remote provider -> probe", autoProbeProvider("bedrock", ["https://a.example/v1", "https://b.example/v1"], false));
+  // Single remote third-party endpoint: passive by default (no background egress).
+  ok("single remote endpoint -> passive", !autoProbeProvider("bedrock", ["https://bedrock.example/v1"], false));
+  // Loopback endpoint: always safe to poll (not egress).
+  ok("single loopback endpoint -> probe", autoProbeProvider("local", ["http://127.0.0.1:11400/v1"], false));
+  // The turnkey SecLLM intake pool addressed by FQDN (SecDeploy single-host): probe because the
+  // intake flag says it's our own inference tier — the loopback signal alone would miss it.
+  ok("secllm intake, single FQDN endpoint -> probe", autoProbeProvider("secllm", ["http://secllm.suite.mil:11400/v1"], true));
+  // Same provider/endpoint but intake NOT active (hand-authored remote 'secllm'): stays passive.
+  ok("remote 'secllm' without intake flag -> passive", !autoProbeProvider("secllm", ["http://secllm.suite.mil:11400/v1"], false));
+  // The intake flag only privileges the provider actually named 'secllm'.
+  ok("intake flag doesn't privilege other providers", !autoProbeProvider("bedrock", ["https://bedrock.example/v1"], true));
 }
 
 console.log(`\nHealth-aware: ${pass} passed, ${fail} failed`);

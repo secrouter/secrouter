@@ -17,7 +17,7 @@ import { randomUUID } from "node:crypto";
 import { route, getFallbackChain, type Tier } from "./router/index.js";
 import { getRoutingConfig } from "./router/config.js";
 import { selectEndpoints, type CursorState } from "./router/balance.js";
-import { healthAwareModel, isLoopbackUrl, computeLiveModels } from "./router/health.js";
+import { healthAwareModel, isLoopbackUrl, computeLiveModels, autoProbeProvider } from "./router/health.js";
 import { buildPricingMap, getModelCatalog } from "./models.js";
 import { forwardRequest, forwardEmbeddingsRequest, TimeoutError, type ChatRequest } from "./provider.js";
 import {
@@ -195,6 +195,7 @@ async function runHealthChecks(): Promise<void> {
   // EVERY endpoint. Otherwise we're in auto mode: probe only what's safe to poll unattended
   // (pooled providers and loopback endpoints — see the per-endpoint guard below).
   const explicit = (breaker.config().healthIntervalSec ?? 0) > 0;
+  const intake = secllmIntakeActive();
   for (const [name, p] of Object.entries(cfg.providers ?? {})) {
     if (p.api !== "openai") continue; // model-list probe is only meaningful for OpenAI-compatible
     const authEnvKey = p.auth?.type === "env" ? p.auth.key : undefined;
@@ -205,12 +206,12 @@ async function runHealthChecks(): Promise<void> {
       logger.error(`health check: endpoint config error for provider '${name}': ${err instanceof Error ? err.message : String(err)}`);
       continue;
     }
+    // Air-gap posture: in auto mode, only probe providers that are safe to poll unattended —
+    // pooled providers, local (loopback) backends, and the self-hosted SecLLM pool (see
+    // autoProbeProvider). A single remote third-party endpoint stays passive unless the operator
+    // sets healthIntervalSec. Explicit config probes everything.
+    if (!explicit && !autoProbeProvider(name, endpoints, intake)) continue;
     for (let idx = 0; idx < endpoints.length; idx++) {
-      // Air-gap posture: in auto mode a single REMOTE endpoint is left passive (no background
-      // egress unless the operator sets healthIntervalSec). A loopback endpoint (a local SecLLM)
-      // is always safe to poll — that's how we learn the local live-model set for health-aware
-      // routing — and a pooled provider (>1 endpoint) needs per-replica liveness regardless.
-      if (!explicit && endpoints.length === 1 && !isLoopbackUrl(endpoints[idx])) continue;
       try {
         const r = await probeEndpoint({ baseUrl: endpoints[idx], api: "openai", authEnvKey });
         const tr = r.ok ? breaker.recordSuccess(name, r.latencyMs, idx) : breaker.recordFailure(name, idx);
@@ -228,27 +229,20 @@ async function runHealthChecks(): Promise<void> {
     }
   }
 }
-/** Default active-check interval when auto-enabled for a pooled provider (see startHealthChecks). */
+/** Default active-check interval when auto-enabled (see startHealthChecks). */
 const AUTO_HEALTH_INTERVAL_SEC = 15;
-/** True if any configured provider has more than one endpoint (a load-balanced pool). */
-function hasPooledProvider(cfg: FreeRouterConfig): boolean {
-  for (const p of Object.values(cfg.providers ?? {})) {
-    try {
-      if (endpointsOf(p).length > 1) return true;
-    } catch {
-      /* malformed baseUrl — not this function's concern */
-    }
-  }
-  return false;
+/** Whether the SecLLM turnkey intake (SECROUTER_SECLLM_ENDPOINTS) is active for this process —
+ * the signal that a provider named `secllm` is the deployment's own self-hosted inference pool. */
+function secllmIntakeActive(): boolean {
+  return (process.env.SECROUTER_SECLLM_ENDPOINTS ?? "").trim() !== "";
 }
-/** True if any OpenAI-compatible provider has a loopback endpoint (a local SecLLM). Such an
- * endpoint is safe to actively health-check even in an air-gapped deploy — it's not egress — and
- * doing so is what lets SecRouter learn the local live-model set for health-aware routing. */
-function hasLocalOpenAiProvider(cfg: FreeRouterConfig): boolean {
-  for (const p of Object.values(cfg.providers ?? {})) {
+/** True if any OpenAI-compatible provider qualifies for auto health-probing (see autoProbeProvider). */
+function hasAutoProbeProvider(cfg: FreeRouterConfig): boolean {
+  const intake = secllmIntakeActive();
+  for (const [name, p] of Object.entries(cfg.providers ?? {})) {
     if (p.api !== "openai") continue;
     try {
-      if (endpointsOf(p).some(isLoopbackUrl)) return true;
+      if (autoProbeProvider(name, endpointsOf(p), intake)) return true;
     } catch {
       /* malformed baseUrl — not this function's concern */
     }
@@ -274,22 +268,19 @@ function startHealthChecks(): void {
     healthTimer = undefined;
   }
   const configuredSec = breaker.config().healthIntervalSec;
-  // Explicit config always wins. Otherwise, auto-enable at a conservative
-  // default for a pooled deploy: multi-endpoint load balancing needs liveness
-  // AND model-list polling per endpoint to work well (breaker isolation,
-  // model-aware routing) — waiting for live traffic alone is too slow to
-  // discover a dead or freshly-rebalanced replica. A single-endpoint config
-  // stays passive-only (today's default) unless explicitly enabled.
-  const auto =
-    (!configuredSec || configuredSec <= 0) &&
-    (hasPooledProvider(getConfig()) || hasLocalOpenAiProvider(getConfig()));
+  // Explicit config always wins. Otherwise, auto-enable at a conservative default when a provider
+  // is safe to poll unattended (see autoProbeProvider): a pooled provider (multi-endpoint LB needs
+  // per-replica liveness + model-list polling), a local loopback backend, or the self-hosted
+  // SecLLM pool (whose live-model set drives health-aware routing). A deploy with only a single
+  // remote third-party endpoint stays passive-only (today's default) unless explicitly enabled.
+  const auto = (!configuredSec || configuredSec <= 0) && hasAutoProbeProvider(getConfig());
   const intervalSec = auto ? AUTO_HEALTH_INTERVAL_SEC : configuredSec;
-  if (!intervalSec || intervalSec <= 0) return; // passive-only (default; no pooled provider)
+  if (!intervalSec || intervalSec <= 0) return; // passive-only (default; nothing safe to auto-probe)
   healthTimer = setInterval(() => void runHealthChecks(), intervalSec * 1000);
   healthTimer.unref?.(); // don't keep the process alive for the timer
   logger.info(
     auto
-      ? `Active provider health checks auto-enabled (every ${intervalSec}s) — a pooled provider (>1 endpoint) needs liveness + model-list polling for load balancing`
+      ? `Active provider health checks auto-enabled (every ${intervalSec}s) — a pooled/local/SecLLM provider needs liveness + model-list polling for load balancing and health-aware routing`
       : `Active provider health checks enabled (every ${intervalSec}s)`,
   );
 }
