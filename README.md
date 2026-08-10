@@ -252,6 +252,26 @@ deep mode: Why does this recursive CTE produce duplicates?
 | `complex`, `advanced` | COMPLEX |
 | `max`, `reasoning`, `think`, `deep` | REASONING |
 
+### Health-aware routing
+
+The classifier maps a request to a tier → model, but that model may not be **loaded** on any
+backend — a single-GPU [SecLLM](https://github.com/secrouter/secllm) commonly serves one model at a
+time, so a tier's configured primary can be entirely absent from the local deployment. SecRouter
+learns what's actually live by polling each OpenAI-compatible provider's `/v1/models`, and steers a
+**non-gated** request to a live model instead of forwarding to one that would `502`. The headline
+case: **when exactly one model is live, every non-gated request goes to it.** When several are live,
+it prefers a live model from the request's own tier chain (in configured order) and otherwise leaves
+the decision alone. This is purely additive — with no liveness data yet, routing is unchanged.
+
+A request is **gated** (never re-steered) when the caller pins a concrete `model` (anything but
+`auto`), or when a per-user policy denies/downgrades to a specific model — those decisions win.
+
+Liveness comes from the same active `/v1/models` probe that powers multi-endpoint load balancing.
+It **auto-enables** for a pooled provider (>1 endpoint) *and* for any **loopback** endpoint (a local
+SecLLM at `127.0.0.1`) — polling localhost isn't egress, so it's safe in an air-gapped deployment. A
+single **remote** endpoint stays passive by default; set `security.resilience.healthIntervalSec` to
+actively probe it too. Steer decisions are logged and carried in the `X-SecRouter-Reasoning` header.
+
 ## Project structure
 
 ```
@@ -262,7 +282,7 @@ src/
   models.ts            Model catalog + pricing
   admin-ui.ts          Admin console SPA (served at /admin)
   metrics.ts           Prometheus registry (served at /metrics)
-  router/              Weighted classifier + tier mappings + multi-endpoint load balancing (balance.ts)
+  router/              Weighted classifier + tier mappings + multi-endpoint load balancing (balance.ts) + health-aware model steering (health.ts)
   security/            ← the security layer
     identity/          OIDC/JWT verification
     policy/            Per-user/group authorization

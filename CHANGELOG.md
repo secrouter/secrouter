@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Routing
+- **Health-aware routing.** SecRouter now steers a non-gated request onto a model that is actually
+  **live** — learned by polling each OpenAI-compatible provider's `/v1/models` — instead of
+  forwarding to a tier's configured model that isn't loaded on any backend (which would `502`).
+  **When exactly one model is live, every non-gated request goes to it**; when several are live it
+  prefers a live model from the request's own tier chain. Explicit-model requests (`model` ≠ `auto`)
+  and policy-pinned/downgraded requests are gates and are never re-steered. Active liveness polling
+  now auto-enables for a **loopback** endpoint (a local SecLLM) as well as for pooled providers —
+  polling localhost isn't egress, so it stays air-gap-safe; a single remote endpoint is still opt-in
+  via `security.resilience.healthIntervalSec`.
+
 ## [1.0.0] — SecRouter
 
 First public release of **SecRouter** — a self-hosted, OpenAI-compatible AI gateway

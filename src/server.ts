@@ -14,9 +14,10 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import { route } from "./router/index.js";
+import { route, getFallbackChain, type Tier } from "./router/index.js";
 import { getRoutingConfig } from "./router/config.js";
 import { selectEndpoints, type CursorState } from "./router/balance.js";
+import { healthAwareModel, isLoopbackUrl, computeLiveModels } from "./router/health.js";
 import { buildPricingMap, getModelCatalog } from "./models.js";
 import { forwardRequest, forwardEmbeddingsRequest, TimeoutError, type ChatRequest } from "./provider.js";
 import {
@@ -190,6 +191,10 @@ let healthTimer: ReturnType<typeof setInterval> | undefined;
 const servedModels = new Map<string, Set<string>>();
 async function runHealthChecks(): Promise<void> {
   const cfg = getConfig();
+  // Explicit config (healthIntervalSec > 0) means the operator opted into active probing of
+  // EVERY endpoint. Otherwise we're in auto mode: probe only what's safe to poll unattended
+  // (pooled providers and loopback endpoints — see the per-endpoint guard below).
+  const explicit = (breaker.config().healthIntervalSec ?? 0) > 0;
   for (const [name, p] of Object.entries(cfg.providers ?? {})) {
     if (p.api !== "openai") continue; // model-list probe is only meaningful for OpenAI-compatible
     const authEnvKey = p.auth?.type === "env" ? p.auth.key : undefined;
@@ -201,6 +206,11 @@ async function runHealthChecks(): Promise<void> {
       continue;
     }
     for (let idx = 0; idx < endpoints.length; idx++) {
+      // Air-gap posture: in auto mode a single REMOTE endpoint is left passive (no background
+      // egress unless the operator sets healthIntervalSec). A loopback endpoint (a local SecLLM)
+      // is always safe to poll — that's how we learn the local live-model set for health-aware
+      // routing — and a pooled provider (>1 endpoint) needs per-replica liveness regardless.
+      if (!explicit && endpoints.length === 1 && !isLoopbackUrl(endpoints[idx])) continue;
       try {
         const r = await probeEndpoint({ baseUrl: endpoints[idx], api: "openai", authEnvKey });
         const tr = r.ok ? breaker.recordSuccess(name, r.latencyMs, idx) : breaker.recordFailure(name, idx);
@@ -231,6 +241,32 @@ function hasPooledProvider(cfg: FreeRouterConfig): boolean {
   }
   return false;
 }
+/** True if any OpenAI-compatible provider has a loopback endpoint (a local SecLLM). Such an
+ * endpoint is safe to actively health-check even in an air-gapped deploy — it's not egress — and
+ * doing so is what lets SecRouter learn the local live-model set for health-aware routing. */
+function hasLocalOpenAiProvider(cfg: FreeRouterConfig): boolean {
+  for (const p of Object.values(cfg.providers ?? {})) {
+    if (p.api !== "openai") continue;
+    try {
+      if (endpointsOf(p).some(isLoopbackUrl)) return true;
+    } catch {
+      /* malformed baseUrl — not this function's concern */
+    }
+  }
+  return false;
+}
+/**
+ * Fully-qualified (`provider/model`) ids SecRouter currently believes are LIVE: a model returned
+ * by a recent successful `/v1/models` probe (see runHealthChecks / servedModels) of an endpoint
+ * whose circuit isn't open. EMPTY means "unknown" — no active health data yet — NOT "nothing is
+ * live"; health-aware routing treats empty as "route as configured" so it stays purely additive.
+ */
+function liveModels(): Set<string> {
+  const openEndpointKeys = new Set(
+    breaker.snapshot().filter((h) => h.state === "open").map((h) => `${h.provider}#${h.endpoint}`),
+  );
+  return computeLiveModels(servedModels, openEndpointKeys);
+}
 /** (Re)start the health-check timer to match the current resilience config. */
 function startHealthChecks(): void {
   if (healthTimer) {
@@ -244,7 +280,9 @@ function startHealthChecks(): void {
   // model-aware routing) — waiting for live traffic alone is too slow to
   // discover a dead or freshly-rebalanced replica. A single-endpoint config
   // stays passive-only (today's default) unless explicitly enabled.
-  const auto = (!configuredSec || configuredSec <= 0) && hasPooledProvider(getConfig());
+  const auto =
+    (!configuredSec || configuredSec <= 0) &&
+    (hasPooledProvider(getConfig()) || hasLocalOpenAiProvider(getConfig()));
   const intervalSec = auto ? AUTO_HEALTH_INTERVAL_SEC : configuredSec;
   if (!intervalSec || intervalSec <= 0) return; // passive-only (default; no pooled provider)
   healthTimer = setInterval(() => void runHealthChecks(), intervalSec * 1000);
@@ -698,6 +736,26 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
     tier = "EXPLICIT";
     reasoning = `explicit model: ${requestedModel}`;
     logger.info(`[${stats.requests + 1}] Passthrough: model=${routedModel}`);
+  }
+
+  // ── Health-aware collapse ──────────────────────────────────────────────────
+  // The classifier picks a model per tier, but that model may not be loaded on any backend (a
+  // single-GPU SecLLM commonly serves ONE model at a time). When SecRouter knows what's actually
+  // live, steer a NON-gated request to a live model rather than forwarding to one that will 502 —
+  // and when exactly one model is live, every non-gated request lands on it. An explicit model
+  // (tier === "EXPLICIT") is a gate: the caller pinned it, so we never override it here. Policy
+  // authorization below is the other gate, and it runs after this on the resolved model.
+  if (tier !== "EXPLICIT") {
+    const tiers = getRoutingConfig().tiers;
+    // Defensive (mirrors the modelsToTry builder below): tier is always a standard key here, but
+    // if a config somehow lacks it, fall back to just the routed model as the preference chain.
+    const chain = tiers[tier as Tier] ? getFallbackChain(tier as Tier, tiers) : [routedModel];
+    const steer = healthAwareModel(routedModel, chain, liveModels());
+    if (steer) {
+      logger.info(`[${stats.requests + 1}] Health-aware: ${routedModel} -> ${steer.model} | ${steer.reason}`);
+      routedModel = steer.model;
+      reasoning = `${reasoning} | ${steer.reason}`;
+    }
   }
 
   // Data classification for this request: a trusted classification header
