@@ -179,6 +179,64 @@ function applyOverlay(cfg: FreeRouterConfig): FreeRouterConfig {
 }
 
 /**
+ * The four SecLLM default-catalog tags, in tier order. `applySecllmEndpointsIntake`
+ * turnkey-routes SIMPLE/MEDIUM/COMPLEX/REASONING to `secllm/<tag>`; SECROUTER_SECLLM_MODELS
+ * can remap any tag to a real backend model id (see parseSecllmModels).
+ */
+const SECLLM_TIER_TAGS: ReadonlyArray<readonly [tier: string, tag: string]> = [
+  ["SIMPLE", "fast"],
+  ["MEDIUM", "balanced"],
+  ["COMPLEX", "large"],
+  ["REASONING", "reasoning"],
+];
+const SECLLM_TAGS = new Set(SECLLM_TIER_TAGS.map(([, tag]) => tag));
+
+/**
+ * Parse SECROUTER_SECLLM_MODELS — the optional companion to
+ * SECROUTER_SECLLM_ENDPOINTS that remaps SecLLM catalog tags to the REAL model
+ * ids a custom pool actually serves. Format: comma-separated `tag=modelId`
+ * pairs, tag ∈ {fast,balanced,large,reasoning} (case-insensitive; they name the
+ * SIMPLE/MEDIUM/COMPLEX/REASONING tiers). Returns a possibly-empty tag→id map;
+ * malformed pairs, unknown tags, and empty ids are skipped with a warning
+ * rather than failing the load (a typo shouldn't take the router down).
+ *
+ * Why: the turnkey intake otherwise forwards the literal tag ("balanced") as the
+ * model id, which only exists in SecLLM's OWN default catalog. A pool serving a
+ * different catalog — e.g. an OpenAI-compatible MLX/vLLM server whose ids are
+ * "org/model" — 404s those tags. This var bridges the two without hand-authoring
+ * `providers.secllm` + `tiers`. Example (Google Gemma tool-caller + a small Llama):
+ *   SECROUTER_SECLLM_MODELS="fast=mlx-community/Llama-3.2-3B-Instruct-4bit,\
+ *   balanced=lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit"
+ * → the "balanced" tag (MEDIUM tier) routes to the 26B model, "fast" (SIMPLE) to
+ * the 3B; unspecified tags keep their literal default.
+ */
+export function parseSecllmModels(raw: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!raw) return out;
+  for (const pair of raw.split(",")) {
+    const entry = pair.trim();
+    if (!entry) continue;
+    const eq = entry.indexOf("=");
+    if (eq <= 0) {
+      logger.warn(`SECROUTER_SECLLM_MODELS: ignoring malformed entry ${JSON.stringify(entry)} (expected tag=modelId)`);
+      continue;
+    }
+    const tag = entry.slice(0, eq).trim().toLowerCase();
+    const id = entry.slice(eq + 1).trim();
+    if (!SECLLM_TAGS.has(tag)) {
+      logger.warn(`SECROUTER_SECLLM_MODELS: ignoring unknown tag ${JSON.stringify(tag)} (expected one of ${[...SECLLM_TAGS].join("/")})`);
+      continue;
+    }
+    if (!id) {
+      logger.warn(`SECROUTER_SECLLM_MODELS: ignoring empty model id for tag ${JSON.stringify(tag)}`);
+      continue;
+    }
+    out[tag] = id;
+  }
+  return out;
+}
+
+/**
  * SECROUTER_SECLLM_ENDPOINTS — turnkey intake for a self-hosted SecLLM pool.
  *
  * If the env var is set (comma-separated base URLs) this auto-registers a
@@ -213,10 +271,13 @@ function applyOverlay(cfg: FreeRouterConfig): FreeRouterConfig {
  * primary or fallback — to `secllm/*`; either signal means the operator has
  * already taken ownership of this provider.
  *
- * The model ids used (fast/balanced/large/reasoning) are SecLLM's
- * default-catalog friendly names. A custom SecLLM catalog uses different ids
- * — hand-configure `providers.secllm` + `tiers`/`agenticTiers` instead of
- * relying on this env var in that case.
+ * The model ids default to SecLLM's default-catalog friendly names
+ * (fast/balanced/large/reasoning). A pool serving a CUSTOM catalog (different
+ * ids) can remap each tag to its real backend model id via
+ * SECROUTER_SECLLM_MODELS (`tag=modelId,...` — see parseSecllmModels) WITHOUT
+ * hand-authoring `providers.secllm` + `tiers`/`agenticTiers`. Hand-config still
+ * wins: the whole intake no-ops if the operator already owns `providers.secllm`
+ * or any `secllm/*` tier route.
  */
 function applySecllmEndpointsIntake(cfg: FreeRouterConfig): void {
   const raw = process.env.SECROUTER_SECLLM_ENDPOINTS;
@@ -248,12 +309,14 @@ function applySecllmEndpointsIntake(cfg: FreeRouterConfig): void {
     auth: { type: "env", key: "SECROUTER_SECLLM_TOKEN" },
   };
 
-  const TURNKEY_MODELS: Record<string, string> = {
-    SIMPLE: `${SECLLM_PREFIX}fast`,
-    MEDIUM: `${SECLLM_PREFIX}balanced`,
-    COMPLEX: `${SECLLM_PREFIX}large`,
-    REASONING: `${SECLLM_PREFIX}reasoning`,
-  };
+  // Tier → `secllm/<model>`. Defaults to the literal SecLLM catalog tag
+  // (fast/balanced/large/reasoning); SECROUTER_SECLLM_MODELS remaps any tag to the
+  // real backend model id a custom pool serves (e.g. balanced → the 26B tool-caller).
+  const modelOverrides = parseSecllmModels(process.env.SECROUTER_SECLLM_MODELS);
+  const TURNKEY_MODELS: Record<string, string> = {};
+  for (const [tier, tag] of SECLLM_TIER_TAGS) {
+    TURNKEY_MODELS[tier] = `${SECLLM_PREFIX}${modelOverrides[tag] ?? tag}`;
+  }
   const rewire = (tiers: Record<string, TierMapping> | undefined): Record<string, TierMapping> => {
     const fresh: Record<string, TierMapping> = { ...(tiers ?? {}) };
     for (const [tierName, primary] of Object.entries(TURNKEY_MODELS)) {
@@ -270,9 +333,12 @@ function applySecllmEndpointsIntake(cfg: FreeRouterConfig): void {
   cfg.tiers = rewire(cfg.tiers);
   cfg.agenticTiers = rewire(cfg.agenticTiers);
 
+  const remapNote = Object.keys(modelOverrides).length
+    ? `Tag remaps (SECROUTER_SECLLM_MODELS): ${Object.entries(modelOverrides).map(([t, m]) => `${t}→${m}`).join(", ")}. `
+    : "";
   logger.info(
     `SECROUTER_SECLLM_ENDPOINTS set — auto-registered provider 'secllm' (${urls.length} endpoint${urls.length === 1 ? "" : "s"}, auth from $SECROUTER_SECLLM_TOKEN) ` +
-      `and turnkey-routed SIMPLE/MEDIUM/COMPLEX/REASONING to it (prior primaries demoted to fallback). ` +
+      `and turnkey-routed SIMPLE/MEDIUM/COMPLEX/REASONING to it (prior primaries demoted to fallback). ${remapNote}` +
       `Egress is NOT auto-authorized — add a 'secllm' rule to security.egress.allowlist or set SECROUTER_EGRESS_FILE, or the pool stays denied under security.enabled.`,
   );
 }

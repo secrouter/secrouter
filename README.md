@@ -167,13 +167,30 @@ an open/unauthenticated SecLLM) — and turnkey-routes SIMPLE/MEDIUM/COMPLEX/
 REASONING (in both `tiers` and `agenticTiers`) to SecLLM's default-catalog
 friendly model ids — `secllm/fast`, `secllm/balanced`, `secllm/large`,
 `secllm/reasoning` respectively — demoting whatever was previously each
-tier's primary into that tier's fallback instead of discarding it. A custom
-SecLLM catalog uses different model ids; hand-configure `providers.secllm`
-and the tier mappings yourself in that case. This intake is purely additive
+tier's primary into that tier's fallback instead of discarding it. This intake is purely additive
 and a strict no-op the moment you take explicit ownership — either by
 defining your own `secllm` provider or routing any tier to `secllm/*`
 yourself. **It only ever wires up routing + credentials — never a network
 path**; see egress below.
+
+**Custom catalog — `SECROUTER_SECLLM_MODELS`.** The tags above
+(`fast`/`balanced`/`large`/`reasoning`) are SecLLM's *default* catalog names,
+forwarded verbatim as the upstream model id. A pool serving a **different**
+catalog — e.g. an OpenAI-compatible MLX or vLLM server whose ids are
+`org/model` — would 404 those tags. Set `SECROUTER_SECLLM_MODELS` to a
+comma-separated list of `tag=modelId` pairs to remap any tag to the real id
+that pool serves, e.g.:
+
+```
+SECROUTER_SECLLM_MODELS=fast=mlx-community/Llama-3.2-3B-Instruct-4bit,balanced=lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit
+```
+
+routes the **`balanced`** tag (the MEDIUM tier) to the 26B tool-caller and
+`fast` (SIMPLE) to the 3B; unspecified tags keep their literal default.
+Unknown tags and malformed pairs are skipped with a warning. This is the
+turnkey alternative to hand-authoring `providers.secllm` + the tier mappings
+for a custom catalog, and applies only when `SECROUTER_SECLLM_ENDPOINTS` is
+also set.
 
 **Egress stays explicit — `SECROUTER_EGRESS_FILE`.** The turnkey intake above
 never touches `security.egress`: under `security.enabled: true`, the

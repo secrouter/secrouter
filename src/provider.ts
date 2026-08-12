@@ -589,6 +589,37 @@ async function forwardToAnthropic(
 /**
  * Forward a chat request to OpenAI-compatible API (Kimi), streaming back as-is.
  */
+/**
+ * Build the OpenAI-compatible upstream request body from a client ChatRequest.
+ * Extracted + exported so the forwarded-field allow-list is unit-testable: a
+ * field silently dropped here is a capability silently broken for EVERY
+ * OpenAI-compatible backend (MLX/vLLM/Ollama/TGI/Bedrock-openai/Azure). In
+ * particular `tools`/`tool_choice` must be forwarded verbatim (the upstream is
+ * already OpenAI-shaped — no Anthropic-style conversion) or the model can never
+ * emit a structured tool_call and an agentic client just sees it ramble about
+ * the tool in prose. The Anthropic path forwards tools too (convertToolsToAnthropic);
+ * this keeps the two paths symmetric.
+ */
+export function buildOpenAIRequestBody(req: ChatRequest, modelName: string, stream: boolean): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model: modelName,
+    messages: req.messages,
+    stream,
+  };
+  if (req.max_tokens) body.max_tokens = req.max_tokens;
+  if (req.temperature !== undefined) body.temperature = req.temperature;
+  if (req.top_p !== undefined) body.top_p = req.top_p;
+  if (req.stop !== undefined) body.stop = req.stop;
+  if (req.tools && req.tools.length > 0) {
+    body.tools = req.tools;
+    if (req.tool_choice !== undefined) body.tool_choice = req.tool_choice;
+  }
+  // Ask the upstream to include token usage in the final streaming chunk,
+  // otherwise per-user accounting would silently record zero for streamed calls.
+  if (stream) body.stream_options = { include_usage: true };
+  return body;
+}
+
 async function forwardToOpenAI(
   req: ChatRequest,
   provider: string,
@@ -609,18 +640,7 @@ async function forwardToOpenAI(
   const auth = getAuth(provider);
 
   const usage = zeroUsage(provider, modelName);
-  const body: Record<string, unknown> = {
-    model: modelName,
-    messages: req.messages,
-    stream: stream,
-  };
-
-  if (req.max_tokens) body.max_tokens = req.max_tokens;
-  if (req.temperature !== undefined) body.temperature = req.temperature;
-  if (req.top_p !== undefined) body.top_p = req.top_p;
-  // Ask the upstream to include token usage in the final streaming chunk,
-  // otherwise per-user accounting would silently record zero for streamed calls.
-  if (stream) body.stream_options = { include_usage: true };
+  const body = buildOpenAIRequestBody(req, modelName, stream);
 
   // Azure OpenAI puts the deployment in the path + an api-version query; other
   // OpenAI-compatible endpoints (incl. Bedrock's /openai/v1) use a flat path.

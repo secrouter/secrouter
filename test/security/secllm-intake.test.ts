@@ -17,7 +17,7 @@
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, getConfig, validateSecurityConfig, type FreeRouterConfig } from "../../src/config.js";
+import { loadConfig, getConfig, validateSecurityConfig, parseSecllmModels, type FreeRouterConfig } from "../../src/config.js";
 import { checkEgress } from "../../src/security/egress/allowlist.js";
 
 let pass = 0;
@@ -55,11 +55,13 @@ function tempConfigPath(partial: Record<string, unknown>): string {
  * egress.test.ts) so it can never leak in from another test file sharing
  * this process.
  */
-function loadWith(opts: { configPath?: string; secllmEndpoints?: string }): FreeRouterConfig {
+function loadWith(opts: { configPath?: string; secllmEndpoints?: string; secllmModels?: string }): FreeRouterConfig {
   if (opts.configPath) process.env.FREEROUTER_CONFIG = opts.configPath;
   else delete process.env.FREEROUTER_CONFIG;
   if (opts.secllmEndpoints !== undefined) process.env.SECROUTER_SECLLM_ENDPOINTS = opts.secllmEndpoints;
   else delete process.env.SECROUTER_SECLLM_ENDPOINTS;
+  if (opts.secllmModels !== undefined) process.env.SECROUTER_SECLLM_MODELS = opts.secllmModels;
+  else delete process.env.SECROUTER_SECLLM_MODELS;
   delete process.env.SECROUTER_EGRESS_FILE;
   loadConfig();
   return getConfig();
@@ -351,8 +353,75 @@ console.log("\nRegression guard: turnkey intake never touches security.egress (P
   );
 }
 
+console.log("\nparseSecllmModels: parses tag=id pairs, skips junk (never throws):");
+{
+  const m = parseSecllmModels(" balanced = lmstudio/gemma-26b , fast=llama-3b ,, bogus=x , large , reasoning= ");
+  ok("balanced parsed + trimmed", m.balanced === "lmstudio/gemma-26b", JSON.stringify(m));
+  ok("fast parsed + trimmed", m.fast === "llama-3b");
+  ok("unknown tag 'bogus' skipped", !("bogus" in m));
+  ok("malformed 'large' (no '=') skipped", !("large" in m));
+  ok("empty id 'reasoning=' skipped", !("reasoning" in m));
+  ok("blank entries between commas ignored", Object.keys(m).length === 2);
+  ok("undefined → empty map", Object.keys(parseSecllmModels(undefined)).length === 0);
+  ok("case-insensitive tag key", parseSecllmModels("BALANCED=z").balanced === "z");
+  ok("id may itself contain '=' (only the first splits)", parseSecllmModels("fast=a=b").fast === "a=b");
+}
+
+console.log("\nSECROUTER_SECLLM_MODELS remaps tags to real backend ids (balanced → the 26B tool-caller):");
+{
+  const cfg = loadWith({
+    secllmEndpoints: "http://mlx-a:8082/v1",
+    secllmModels: "fast=mlx-community/Llama-3.2-3B-Instruct-4bit,balanced=lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit",
+  });
+  ok("provider still registered (endpoints drive the provider; models only relabel tiers)", cfg.providers.secllm !== undefined);
+  ok(
+    "MEDIUM (the 'balanced' tag) → secllm/<gemma id>",
+    cfg.tiers.MEDIUM.primary === "secllm/lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit",
+    cfg.tiers.MEDIUM.primary,
+  );
+  ok(
+    "SIMPLE (the 'fast' tag) → secllm/<llama id>",
+    cfg.tiers.SIMPLE.primary === "secllm/mlx-community/Llama-3.2-3B-Instruct-4bit",
+    cfg.tiers.SIMPLE.primary,
+  );
+  ok("COMPLEX (the 'large' tag, unspecified) keeps the literal default", cfg.tiers.COMPLEX.primary === "secllm/large");
+  ok("REASONING (unspecified) keeps the literal default", cfg.tiers.REASONING.primary === "secllm/reasoning");
+  ok(
+    "agenticTiers.MEDIUM is remapped identically (agentic path uses the same catalog)",
+    cfg.agenticTiers?.MEDIUM.primary === "secllm/lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit",
+  );
+  ok(
+    "fallback demotion is unaffected by the remap — prior MEDIUM primary (bedrock 120b) still demoted",
+    JSON.stringify(cfg.tiers.MEDIUM.fallback) === '["bedrock/openai.gpt-oss-120b-1:0"]',
+    JSON.stringify(cfg.tiers.MEDIUM.fallback),
+  );
+}
+
+console.log("\nSECROUTER_SECLLM_MODELS with NO endpoints ⇒ strict no-op (the intake needs endpoints to run):");
+{
+  const cfg = loadWith({ secllmModels: "balanced=lmstudio/gemma-26b" });
+  ok("no secllm provider (endpoints unset ⇒ intake never runs)", cfg.providers.secllm === undefined);
+  ok("tiers stay at the built-in bedrock defaults", cfg.tiers.MEDIUM.primary === "bedrock/openai.gpt-oss-120b-1:0");
+}
+
+console.log("\nNon-destructive: an explicit providers.secllm ⇒ SECROUTER_SECLLM_MODELS is ignored too (operator owns routing):");
+{
+  const cfgPath = tempConfigPath({
+    providers: { secllm: { api: "openai", baseUrl: "http://operator:9000/v1" } },
+    tiers: {
+      SIMPLE: { primary: "secllm/my-own", fallback: [] },
+      MEDIUM: { primary: "secllm/my-own", fallback: [] },
+      COMPLEX: { primary: "secllm/my-own", fallback: [] },
+      REASONING: { primary: "secllm/my-own", fallback: [] },
+    },
+  });
+  const cfg = loadWith({ configPath: cfgPath, secllmEndpoints: "http://ignored:8000/v1", secllmModels: "balanced=should-be-ignored" });
+  ok("operator's MEDIUM primary untouched (remap did not apply)", cfg.tiers.MEDIUM.primary === "secllm/my-own");
+}
+
 delete process.env.FREEROUTER_CONFIG;
 delete process.env.SECROUTER_SECLLM_ENDPOINTS;
+delete process.env.SECROUTER_SECLLM_MODELS;
 
 console.log(`\nSecLLM intake: ${pass} passed, ${fail} failed`);
 if (fail > 0) process.exit(1);

@@ -2,7 +2,25 @@
 
 ## [Unreleased]
 
+### Fixed
+- **OpenAI-path tool-calling.** `forwardToOpenAI` built the upstream request body with only
+  `model`/`messages`/`stream`/`max_tokens`/`temperature`/`top_p` — it silently dropped **`tools`**,
+  **`tool_choice`**, and **`stop`**. Every OpenAI-compatible backend (MLX, vLLM, Ollama, TGI,
+  Bedrock-openai, Azure) therefore never received tool definitions, so the model could not emit a
+  structured `tool_call` and agentic clients (e.g. pi) saw it narrate the tool in prose instead. The
+  Anthropic path already forwarded tools; the OpenAI path now does too. Body construction is factored
+  into `buildOpenAIRequestBody` with a regression test on the forwarded-field allow-list.
+
 ### Routing
+- **Custom-catalog tier remap — `SECROUTER_SECLLM_MODELS`.** The turnkey SecLLM intake
+  (`SECROUTER_SECLLM_ENDPOINTS`) routes SIMPLE/MEDIUM/COMPLEX/REASONING to the default tags
+  `secllm/fast|balanced|large|reasoning`, which only exist in SecLLM's own catalog. A pool serving a
+  **custom** OpenAI-compatible catalog (e.g. an MLX/vLLM server whose ids are `org/model`) can now
+  remap each tag to its real backend model id via `SECROUTER_SECLLM_MODELS` (`tag=modelId,…`) — e.g.
+  `balanced=lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit` points the MEDIUM tier at the 26B
+  tool-caller — without hand-authoring `providers.secllm` + the tier mappings. Backward-compatible
+  (unset = the literal tags), applies only alongside `SECROUTER_SECLLM_ENDPOINTS`, and skips
+  unknown/malformed entries with a warning.
 - **Health-aware routing.** SecRouter now steers a non-gated request onto a model that is actually
   **live** — learned by polling each OpenAI-compatible provider's `/v1/models` — instead of
   forwarding to a tier's configured model that isn't loaded on any backend (which would `502`).
