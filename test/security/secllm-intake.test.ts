@@ -395,6 +395,12 @@ console.log("\nSECROUTER_SECLLM_MODELS remaps tags to real backend ids (balanced
     JSON.stringify(cfg.tiers.MEDIUM.fallback) === '["bedrock/openai.gpt-oss-120b-1:0"]',
     JSON.stringify(cfg.tiers.MEDIUM.fallback),
   );
+  ok(
+    "cfg.secllmModelAliases exposes the tag→id map (so an explicit secllm/<tag> resolves at forward time)",
+    JSON.stringify(cfg.secllmModelAliases) ===
+      JSON.stringify({ fast: "mlx-community/Llama-3.2-3B-Instruct-4bit", balanced: "lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit" }),
+    JSON.stringify(cfg.secllmModelAliases),
+  );
 }
 
 console.log("\nSECROUTER_SECLLM_MODELS with NO endpoints ⇒ strict no-op (the intake needs endpoints to run):");

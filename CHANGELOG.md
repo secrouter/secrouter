@@ -18,7 +18,10 @@
   **custom** OpenAI-compatible catalog (e.g. an MLX/vLLM server whose ids are `org/model`) can now
   remap each tag to its real backend model id via `SECROUTER_SECLLM_MODELS` (`tag=modelId,…`) — e.g.
   `balanced=lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit` points the MEDIUM tier at the 26B
-  tool-caller — without hand-authoring `providers.secllm` + the tier mappings. Backward-compatible
+  tool-caller — without hand-authoring `providers.secllm` + the tier mappings. The mapping applies
+  to **both** the classifier's tiers **and** an explicit `secllm/<tag>` request: `model:
+  "secllm/balanced"` resolves to the mapped id at forward time, so a client that pins its model by
+  tag (e.g. an agent) gets the mapped model instead of a 404 on the literal tag. Backward-compatible
   (unset = the literal tags), applies only alongside `SECROUTER_SECLLM_ENDPOINTS`, and skips
   unknown/malformed entries with a warning.
 - **Health-aware routing.** SecRouter now steers a non-gated request onto a model that is actually

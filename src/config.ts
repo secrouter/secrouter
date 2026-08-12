@@ -98,6 +98,13 @@ export type FreeRouterConfig = {
   /** Governed embeddings: default model for POST /v1/embeddings when the client sends "auto"/none. */
   embeddings?: { default?: string };
   agenticTiers?: Record<string, TierMapping>;
+  /**
+   * SecLLM tier-tag → real backend model id, populated from SECROUTER_SECLLM_MODELS by
+   * applySecllmEndpointsIntake. Lets an EXPLICIT `secllm/<tag>` request (e.g. `secllm/balanced`)
+   * resolve to the mapped model at forward time (see provider.resolveSecllmModel), so requesting
+   * the tag by name yields the same model the classifier's tiers route to. Absent = no remap.
+   */
+  secllmModelAliases?: Record<string, string>;
   tierBoundaries?: {
     simpleMedium: number;
     mediumComplex: number;
@@ -332,6 +339,12 @@ function applySecllmEndpointsIntake(cfg: FreeRouterConfig): void {
   };
   cfg.tiers = rewire(cfg.tiers);
   cfg.agenticTiers = rewire(cfg.agenticTiers);
+  // Retain the tag→id map so an EXPLICIT `secllm/<tag>` request resolves to the same model the
+  // tiers above route to (see provider.resolveSecllmModel) — otherwise the literal tag would be
+  // forwarded and 404 on a custom pool. Only set when a remap was actually supplied.
+  if (Object.keys(modelOverrides).length > 0) {
+    cfg.secllmModelAliases = { ...modelOverrides };
+  }
 
   const remapNote = Object.keys(modelOverrides).length
     ? `Tag remaps (SECROUTER_SECLLM_MODELS): ${Object.entries(modelOverrides).map(([t, m]) => `${t}→${m}`).join(", ")}. `

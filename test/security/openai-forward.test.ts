@@ -10,7 +10,7 @@
  * Run: npx tsx test/security/openai-forward.test.ts
  */
 
-import { buildOpenAIRequestBody, type ChatRequest } from "../../src/provider.js";
+import { buildOpenAIRequestBody, resolveSecllmModel, type ChatRequest } from "../../src/provider.js";
 
 let pass = 0;
 let fail = 0;
@@ -88,6 +88,17 @@ console.log("\nstreaming adds stream_options so usage accounting isn't silently 
   const body = buildOpenAIRequestBody({ model: "m", messages: [] } as ChatRequest, "u", true);
   ok("stream=true forwarded", body.stream === true);
   ok("stream_options.include_usage set", JSON.stringify(body.stream_options) === JSON.stringify({ include_usage: true }));
+}
+
+console.log("\nresolveSecllmModel — an explicit secllm/<tag> resolves via the SECROUTER_SECLLM_MODELS remap:");
+{
+  const aliases = { balanced: "lmstudio-community/gemma-4-26B", fast: "mlx-community/Llama-3.2-3B" };
+  ok("secllm + mapped tag → the real backend id", resolveSecllmModel("secllm", "balanced", aliases) === "lmstudio-community/gemma-4-26B");
+  ok("secllm + a different mapped tag", resolveSecllmModel("secllm", "fast", aliases) === "mlx-community/Llama-3.2-3B");
+  ok("secllm + unmapped tag → unchanged (literal forwarded)", resolveSecllmModel("secllm", "large", aliases) === "large");
+  ok("secllm + already-real id → unchanged (tier route carries the id)", resolveSecllmModel("secllm", "lmstudio-community/gemma-4-26B", aliases) === "lmstudio-community/gemma-4-26B");
+  ok("non-secllm provider → never remapped", resolveSecllmModel("bedrock", "balanced", aliases) === "balanced");
+  ok("no aliases configured → unchanged", resolveSecllmModel("secllm", "balanced", undefined) === "balanced");
 }
 
 console.log(`\nOpenAI forward body: ${pass} passed, ${fail} failed`);
