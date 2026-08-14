@@ -109,6 +109,13 @@ export const ADMIN_HTML = `<!doctype html>
 <script>
 (function(){
   var TIERS = ["SIMPLE","MEDIUM","COMPLEX","REASONING"];
+  // Built-in default providers baked into config.ts's DEFAULT_CONFIG. deepMerge
+  // always folds these under the file config, so removing a file-defined
+  // provider of the same name (POST /admin/api/endpoint/remove) writes a clean
+  // file, but the built-in resurfaces after reload — with no egress rule, so
+  // deny-by-default blocks it (fail-closed, not a routing/egress hole). Surfaced
+  // as a card note rather than hidden.
+  var BUILTIN_PROVIDERS = ["bedrock"];
   var state = { token:null, oidc:null, cfg:null };
 
   // ── Theme (light / dark, follows OS by default, choice persisted) ──
@@ -126,6 +133,7 @@ export const ADMIN_HTML = `<!doctype html>
       else if (k==="onchange") n.onchange=attrs[k];
       else if (k==="value") n.value=attrs[k];
       else if (k==="checked") { if(attrs[k]) n.checked=true; }
+      else if (k==="disabled") { if(attrs[k]) n.disabled=true; }
       else n.setAttribute(k, attrs[k]);
     }
     if (kids!=null) (Array.isArray(kids)?kids:[kids]).forEach(function(c){
@@ -140,6 +148,8 @@ export const ADMIN_HTML = `<!doctype html>
   // a pooled/multi-host array) as a readable comma list, never an implicit
   // Array.toString(). "—" for empty/missing.
   function listText(v){ if(Array.isArray(v)) return v.length?v.join(", "):"—"; return v||"—"; }
+  // Circuit-breaker state → {cls,label} pill, shared by Monitor and Models tabs.
+  function healthState(s){ return ({ closed:{cls:"ok",label:"healthy"}, "half-open":{cls:"warn",label:"half-open"}, open:{cls:"bad",label:"open"} })[s] || {cls:"muted",label:s||"unknown"}; }
 
   // ── PKCE ──
   function b64url(buf){ return btoa(String.fromCharCode.apply(null,new Uint8Array(buf))).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=+$/,""); }
@@ -567,32 +577,155 @@ export const ADMIN_HTML = `<!doctype html>
   }
 
   // ── Models tab ──
+  // Loads live model availability (GET /admin/api/models/available — reachability,
+  // model lists and circuit state per provider) before rendering, so tier routing
+  // only ever offers models we can actually hit.
   function renderModels(main){
     main.innerHTML="";
-    var cfg = state.cfg; var models = cfg.knownModels||[]; var tiers = cfg.tiers||{};
-    var card = el("div",{class:"card"}, el("h3",{text:"Tier → model routing (editable)"}));
+    main.appendChild(el("div",{class:"muted",text:"Checking model availability…"}));
+    api("/admin/api/models/available").then(function(r){return r.json();}).then(function(d){
+      var avail = Array.isArray(d) ? d : [];
+      renderModelsBody(main, avail, Array.isArray(d) ? null : "unexpected response");
+    }).catch(function(e){ renderModelsBody(main, [], e.message); });
+  }
+
+  function renderModelsBody(main, avail, loadErr){
+    main.innerHTML="";
+    var cfg = state.cfg; var tiers = cfg.tiers||{};
+    var levels = (cfg.classification && cfg.classification.levels) || [];
+    var availByProv = {}; avail.forEach(function(a){ availByProv[a.provider]=a; });
+    // Union of reachable model ids across all providers — the ONLY choices offered
+    // for a tier's primary/fallback (you can't route to a model we can't hit).
+    var availModels = [];
+    avail.forEach(function(a){ if(a.reachable) (a.models||[]).forEach(function(m){ if(availModels.indexOf(m.id)<0) availModels.push(m.id); }); });
+    if(loadErr) main.appendChild(el("div",{class:"pill bad",text:"Could not check model availability: "+loadErr+" — tier options may be stale"}));
+
+    // ── Tier → model routing, options limited to reachable models ──
+    var tierCard = el("div",{class:"card"}, el("h3",{text:"Tier → model routing (choices limited to reachable models)"}));
     TIERS.forEach(function(t){
       var tc = tiers[t]||{primary:"",fallback:[]};
-      var prim = el("select",{}, models.filter(function(m){return m.kind!=="embedding";}).map(function(m){return el("option",{value:m.id,text:m.id+"  ("+usd(m.inputPrice)+"/"+usd(m.outputPrice)+" per Mtok)"});}));
-      prim.value = tc.primary;
-      var fb = el("input",{type:"text",value:(tc.fallback||[]).join(", "),placeholder:"fallback ids, comma-separated"});
-      function save(){
-        var body = { primary: prim.value, fallback: fb.value.split(",").map(function(s){return s.trim();}).filter(Boolean) };
-        api("/admin/api/tier/"+t,{method:"PUT",body:body}).then(function(r){ if(r.ok){toast("Saved "+t); loadConfig();} else r.json().then(function(j){toast(j.error?j.error.message:"rejected",true);}); });
-      }
-      card.appendChild(el("div",{class:"row"},[el("label",{text:t}), prim, fb, el("button",{class:"btn",text:"Save",onclick:save})]));
-    });
-    main.appendChild(card);
+      var primOptions = availModels.slice();
+      var primUnreachable = !!tc.primary && primOptions.indexOf(tc.primary)<0;
+      if(primUnreachable) primOptions.push(tc.primary); // keep the current pick visible; not offered as a fresh choice elsewhere
+      var prim = el("select",{}, primOptions.map(function(id){
+        // The current-but-unreachable primary is shown so it stays visible as the
+        // selection, but disabled so it can't be re-chosen after switching away.
+        var disabled = primUnreachable && id===tc.primary;
+        return el("option",{value:id,text:id,disabled:disabled});
+      }));
+      if(tc.primary) prim.value = tc.primary;
+      var primFlag = primUnreachable ? el("span",{class:"pill bad",text:"unreachable"}) : null;
 
-    // Endpoints — live view of configured providers joined with their egress rule, then the wizard.
-    var levels = (cfg.classification && cfg.classification.levels) || [];
+      var fbChecks = el("div",{class:"checks"}, availModels.map(function(id){
+        var c=el("input",{type:"checkbox",value:id}); if((tc.fallback||[]).indexOf(id)>=0) c.checked=true;
+        return el("label",{},[c,id]);
+      }));
+      var staleFallback = (tc.fallback||[]).filter(function(id){ return availModels.indexOf(id)<0; });
+      var staleFlag = staleFallback.length ? el("span",{class:"pill bad",title:"kept on save",text:staleFallback.join(", ")+" unreachable"}) : null;
+
+      function save(){
+        var fb = getChecks(fbChecks).concat(staleFallback);
+        var body = { primary: prim.value, fallback: fb };
+        api("/admin/api/tier/"+t,{method:"PUT",body:body}).then(function(r){
+          if(r.ok){ toast("Saved "+t); loadConfig().then(function(){ renderModelsBody(main, avail, loadErr); }); }
+          else r.json().then(function(j){toast(j.error?j.error.message:"rejected",true);});
+        });
+      }
+      tierCard.appendChild(el("div",{class:"row"},[
+        el("label",{text:t}), prim, primFlag,
+        el("span",{class:"muted",style:"min-width:auto;",text:"fallback:"}), fbChecks, staleFlag,
+        el("button",{class:"btn",text:"Save",onclick:save})
+      ]));
+    });
+    main.appendChild(tierCard);
+
+    // ── Configured endpoints — egress edit, current routing, health, remove ──
+    main.appendChild(el("h3",{},["Configured endpoints ", el("span",{class:"pill warn",text:"egress · compliance-critical"})]));
     var egByProv = {}; (cfg.egress||[]).forEach(function(e){ egByProv[e.provider]=e; });
-    var epCard = el("div",{class:"card"}, el("h3",{},["Model endpoints ", el("span",{class:"pill warn",text:"egress · compliance-critical"})]));
-    epCard.appendChild(el("table",{}, [el("tr",{},[el("th",{text:"name"}),el("th",{text:"api"}),el("th",{text:"endpoint"}),el("th",{text:"egress host"}),el("th",{text:"classifications"})])].concat(
-      Object.keys(cfg.providers||{}).map(function(n){ var p=cfg.providers[n], e=egByProv[n]||{};
-        return el("tr",{},[el("td",{text:n}),el("td",{text:p.api}),el("td",{text:listText(p.baseUrl)}),el("td",{text:listText(e.allowedHost)}),el("td",{text:(e.authorizedClassifications||[]).join(", ")||"—"})]); })
-    )));
-    main.appendChild(epCard);
+    var provNames = Object.keys(cfg.providers||{});
+    if(!provNames.length) main.appendChild(el("div",{class:"card ro"},[el("div",{class:"muted",text:"No providers configured yet — add one below."})]));
+    provNames.forEach(function(n){
+      var p = cfg.providers[n]; var e = egByProv[n]||{};
+      var a = availByProv[n];
+      var card = el("div",{class:"card"});
+      var headRow = el("div",{class:"row"},[el("strong",{text:n}), el("span",{class:"muted",text:p.api}), el("span",{class:"muted",text:listText(p.baseUrl)})]);
+      if(a){
+        var hs = healthState(a.health && a.health.state);
+        headRow.appendChild(el("span",{class:"pill "+(a.reachable?"ok":"bad"),text:a.reachable?"reachable":"unreachable"}));
+        headRow.appendChild(el("span",{class:"pill "+hs.cls,text:hs.label}));
+        headRow.appendChild(el("span",{class:"muted",text:(a.models||[]).length+" models"}));
+        if(a.error) headRow.appendChild(el("span",{class:"muted",text:a.error}));
+      } else {
+        headRow.appendChild(el("span",{class:"pill",text:"no health data"}));
+      }
+      if(BUILTIN_PROVIDERS.indexOf(n)>=0){
+        headRow.appendChild(el("span",{class:"pill warn",title:"Baked into the server's built-in defaults — removing it here clears the file, but it resurfaces after reload with no egress rule (blocked by deny-by-default egress, not a routing hole).",text:"built-in default"}));
+      }
+      card.appendChild(headRow);
+
+      // Which tier(s) currently route to this provider, with live health.
+      var current = [];
+      TIERS.forEach(function(t){
+        var tc = tiers[t]||{};
+        if(tc.primary && tc.primary.indexOf(n+"/")===0){
+          var hs2 = a ? healthState(a.health && a.health.state).label : "unknown";
+          current.push(t+" — current: "+tc.primary+" · "+hs2);
+        }
+      });
+      card.appendChild(el("div",{class:"row"}, current.length ? [el("span",{class:"muted",text:current.join("   ")})] : [el("span",{class:"muted",text:"not used as a tier primary"})]));
+
+      // Egress: admin-editable allowed host + authorized classifications.
+      // POST /admin/api/endpoint/egress writes a single host string; a pooled
+      // provider's multi-host rule is shown read-only above the editable field
+      // so saving here can't silently collapse it to one host.
+      var pooledHosts = Array.isArray(e.allowedHost) ? e.allowedHost : null;
+      var hostIn = el("input",{type:"text",value: pooledHosts ? "" : (e.allowedHost||""), placeholder: pooledHosts ? "add/replace with a single host…" : "host:port"});
+      var classDiv = el("div",{class:"checks"}, levels.map(function(l){
+        var c=el("input",{type:"checkbox",value:l}); if((e.authorizedClassifications||[]).indexOf(l)>=0) c.checked=true;
+        return el("label",{},[c,l]);
+      }));
+      function saveEgress(){
+        var host = hostIn.value.trim(); // POST /admin/api/endpoint/egress takes a single host string (not the pooled array shape)
+        if(!host){ toast("egress host required",true); return; }
+        var classes = getChecks(classDiv);
+        if(!classes.length){ toast("pick a classification",true); return; }
+        var body = { provider:n, allowedHost: host, authorizedClassifications: classes };
+        // The write lands in the config FILE (applied:false — "reload or restart to
+        // apply"); GET /admin/api/config serves the still-active effective config, so
+        // without an explicit reload here the edit would visually revert until the
+        // wizard's Reload button is pressed. Reload before re-rendering.
+        api("/admin/api/endpoint/egress",{method:"POST",body:body}).then(function(r){
+          if(r.ok){
+            api("/admin/api/reload",{method:"POST"})
+              .then(function(){ toast("Saved egress for "+n); loadConfig().then(function(){ renderModelsBody(main, avail, loadErr); }); })
+              .catch(function(e){ toast("Saved egress for "+n+" — reload failed ("+e.message+"); reload manually",true); loadConfig().then(function(){ renderModelsBody(main, avail, loadErr); }); });
+          }
+          else r.json().then(function(j){toast(j.error?j.error.message:"rejected",true);});
+        });
+      }
+      if(pooledHosts) card.appendChild(el("div",{class:"row"},[el("label",{text:"Current hosts"}), el("span",{class:"muted",text:pooledHosts.join(", ")}), el("span",{class:"pill warn",text:"pooled — editor below replaces with ONE host"})]));
+      card.appendChild(el("div",{class:"row"},[el("label",{text:"Egress host"}), hostIn]));
+      card.appendChild(el("div",{class:"row"},[el("label",{text:"Classifications"}), classDiv, el("button",{class:"btn",text:"Save egress",onclick:saveEgress})]));
+
+      // Remove.
+      function removeEndpoint(){
+        if(!confirm("Remove endpoint '"+n+"'? This clears its egress rule and any tier routing that used it.")) return;
+        // Same applied:false / stale-GET situation as saveEgress above: reload
+        // before refetching config so the removed provider doesn't reappear.
+        api("/admin/api/endpoint/remove",{method:"POST",body:{provider:n}}).then(function(r){
+          if(r.ok){
+            api("/admin/api/reload",{method:"POST"})
+              .then(function(){ toast("Removed "+n); loadConfig().then(function(){ renderModels(main); }); })
+              .catch(function(e){ toast("Removed "+n+" — reload failed ("+e.message+"); reload manually",true); loadConfig().then(function(){ renderModels(main); }); });
+          }
+          else r.json().then(function(j){toast(j.error?j.error.message:"remove failed",true);});
+        });
+      }
+      card.appendChild(el("div",{class:"row"},[el("button",{class:"btn danger",text:"Remove endpoint",onclick:removeEndpoint})]));
+
+      main.appendChild(card);
+    });
+
     main.appendChild(buildEndpointWizard(levels));
   }
 

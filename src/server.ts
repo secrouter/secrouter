@@ -40,6 +40,7 @@ import {
   endpointsOf,
   takePendingEgressFileAudit,
   type FreeRouterConfig,
+  type TierMapping,
 } from "./config.js";
 import {
   initSecurity,
@@ -65,7 +66,16 @@ import {
 } from "./security/index.js";
 import type { Principal, UsageResult, OverrideScope } from "./security/types.js";
 import { ADMIN_HTML } from "./admin-ui.js";
-import { probeEndpoint, previewEndpoint, applyEndpoint, type ProbeRequest, type EndpointSpec } from "./security/endpoints.js";
+import {
+  probeEndpoint,
+  previewEndpoint,
+  applyEndpoint,
+  removeEndpoint,
+  updateEgressRule,
+  ProviderNotFoundError,
+  type ProbeRequest,
+  type EndpointSpec,
+} from "./security/endpoints.js";
 import { metrics, renderMetrics } from "./metrics.js";
 import { handleMcpRpc, probeMcpTools } from "./security/mcp/gateway.js";
 import type { JsonRpcRequest } from "./security/mcp/types.js";
@@ -1359,6 +1369,162 @@ async function handleEndpointApply(req: IncomingMessage, res: ServerResponse, ct
   res.end(JSON.stringify({ status: "written", ...out, applied: false, hint: "reload or restart to apply" }));
 }
 
+/**
+ * GET /admin/api/models/available — probe every configured provider's
+ * model-list endpoint (same reach+list logic as POST /admin/api/endpoint/probe)
+ * and report reachability, provider-prefixed model ids (ready to drop straight
+ * into a tier's primary/fallback), and circuit-breaker health (same source as
+ * GET /admin/api/health). Read-only — never writes config; not audited as an
+ * admin.action mutation (requireAdmin still gates + audits the call itself).
+ */
+async function handleModelsAvailable(res: ServerResponse) {
+  const cfg = getConfig();
+  const byKey = new Map(breaker.snapshot().map((h) => [`${h.provider}#${h.endpoint}`, h]));
+  const resilienceCfg = breaker.config();
+  const results = await Promise.all(
+    Object.entries(cfg.providers ?? {}).map(async ([name, p]) => {
+      let baseUrl: string;
+      try {
+        [baseUrl] = endpointsOf(p);
+      } catch (err) {
+        return {
+          provider: name,
+          baseUrl: "",
+          reachable: false,
+          models: [] as { id: string; owned_by: string }[],
+          health: { state: "closed" as const, healthIntervalSec: resilienceCfg.healthIntervalSec },
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+      const authEnvKey = p.auth?.type === "env" ? p.auth.key : undefined;
+      const probe = await probeEndpoint({ baseUrl, api: p.api, authEnvKey });
+      const health = byKey.get(`${name}#0`);
+      return {
+        provider: name,
+        baseUrl,
+        reachable: probe.ok,
+        models: (probe.models ?? []).map((id) => ({
+          id: id.startsWith(`${name}/`) ? id : `${name}/${id}`,
+          owned_by: name,
+        })),
+        health: { state: health?.state ?? "closed", healthIntervalSec: resilienceCfg.healthIntervalSec },
+        error: probe.ok ? null : (probe.error ?? "unreachable"),
+      };
+    }),
+  );
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(results, null, 2));
+}
+
+/**
+ * POST /admin/api/endpoint/remove — remove a provider from the config: delete
+ * providers.<name>, drop its egress allow-list rule, and blank/prune any tier
+ * primary/fallback that referenced its models. Atomic validated write + audit,
+ * same write path as endpoint/apply. 404 if the provider isn't configured.
+ */
+async function handleEndpointRemove(req: IncomingMessage, res: ServerResponse, ctx: Ctx) {
+  let body: { provider?: string };
+  try {
+    body = JSON.parse(await readBody(req)) as { provider?: string };
+  } catch {
+    return sendError(res, 400, "Invalid JSON body", "invalid_request_error");
+  }
+  const provider = typeof body?.provider === "string" ? body.provider.trim() : "";
+  if (!provider) return sendError(res, 400, "provider is required", "invalid_request_error");
+
+  try {
+    const out = removeEndpoint(provider);
+
+    // The file-tier cleanup above only reaches tiers defined in the config
+    // file. Tier edits made from the console (PUT /admin/api/tier/<name>)
+    // live as DB overrides that overlay the file on every reload — if one of
+    // those still points at this provider, a dangling `${provider}/model`
+    // reference would resurface as soon as the config reloads even though
+    // the file itself is clean. Clear/prune those overrides here too.
+    const prefix = `${provider}/`;
+    const clearedTiers = new Set(out.clearedTiers);
+    for (const o of getOverrides().list()) {
+      if (o.scope !== "tier") continue;
+      const mapping = o.value as TierMapping | undefined;
+      const primaryStale = typeof mapping?.primary === "string" && mapping.primary.startsWith(prefix);
+      const fallback = Array.isArray(mapping?.fallback) ? mapping.fallback : [];
+      const cleanedFallback = fallback.filter((m) => typeof m !== "string" || !m.startsWith(prefix));
+      if (!primaryStale && cleanedFallback.length === fallback.length) continue; // nothing referenced this provider
+      const cleanedPrimary = primaryStale ? "" : (mapping?.primary ?? "");
+      if (!cleanedPrimary && cleanedFallback.length === 0) {
+        getOverrides().remove("tier", o.name, ctx.principal!.id);
+      } else {
+        getOverrides().put("tier", o.name, { primary: cleanedPrimary, fallback: cleanedFallback }, ctx.principal!.id, new Date().toISOString());
+      }
+      clearedTiers.add(o.name);
+    }
+
+    getAuditor().emit(
+      audit.adminAction(ctx.principal!.id, "endpoint.remove", { provider, path: out.path, sourceIp: ctx.sourceIp }),
+    );
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify(
+        {
+          status: "removed",
+          provider,
+          path: out.path,
+          removedEgress: out.removedEgress,
+          clearedTiers: [...clearedTiers],
+          applied: false,
+          hint: "reload or restart to apply",
+        },
+        null,
+        2,
+      ),
+    );
+  } catch (err) {
+    if (err instanceof ProviderNotFoundError) return sendError(res, 404, err.message, "not_found");
+    return sendError(res, 422, err instanceof Error ? err.message : "remove failed", "config_error");
+  }
+}
+
+/**
+ * POST /admin/api/endpoint/egress — update an EXISTING provider's egress rule
+ * (allowedHost + authorizedClassifications) in place. Atomic validated write +
+ * audit, same write path as endpoint/apply. 404 if the provider (or its egress
+ * rule) doesn't exist; 400 if authorizedClassifications is missing/empty.
+ */
+async function handleEndpointEgress(req: IncomingMessage, res: ServerResponse, ctx: Ctx) {
+  let body: { provider?: string; allowedHost?: string; authorizedClassifications?: string[]; authorization?: string };
+  try {
+    body = JSON.parse(await readBody(req));
+  } catch {
+    return sendError(res, 400, "Invalid JSON body", "invalid_request_error");
+  }
+  const provider = typeof body?.provider === "string" ? body.provider.trim() : "";
+  if (!provider) return sendError(res, 400, "provider is required", "invalid_request_error");
+  const allowedHost = typeof body?.allowedHost === "string" ? body.allowedHost.trim() : "";
+  if (!allowedHost) return sendError(res, 400, "allowedHost is required", "invalid_request_error");
+  const authorizedClassifications = Array.isArray(body?.authorizedClassifications) ? body.authorizedClassifications : [];
+  if (authorizedClassifications.length === 0) {
+    return sendError(res, 400, "authorizedClassifications must be a non-empty array", "invalid_request_error");
+  }
+
+  try {
+    const out = updateEgressRule(provider, allowedHost, authorizedClassifications, body?.authorization);
+    getAuditor().emit(
+      audit.adminAction(ctx.principal!.id, "endpoint.egress", { provider, path: out.path, sourceIp: ctx.sourceIp }),
+    );
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify(
+        { status: "updated", provider, path: out.path, egress: out.rule, applied: false, hint: "reload or restart to apply" },
+        null,
+        2,
+      ),
+    );
+  } catch (err) {
+    if (err instanceof ProviderNotFoundError) return sendError(res, 404, err.message, "not_found");
+    return sendError(res, 422, err instanceof Error ? err.message : "egress update failed", "config_error");
+  }
+}
+
 /** POST /admin/api/restart — graceful restart so the supervisor reloads the new config. */
 function handleAdminRestart(res: ServerResponse, ctx: Ctx) {
   getAuditor().emit(audit.adminAction(ctx.principal!.id, "service.restart", { sourceIp: ctx.sourceIp }));
@@ -1488,10 +1654,16 @@ async function handleAdminApi(method: string, path: string, req: IncomingMessage
   if (method === "GET" && path === "/admin/api/audit/verify") return handleAuditVerify(res);
   if (method === "GET" && path === "/admin/api/evidence") return handleEvidence(res, ctx);
 
+  // Model-driven tiers: what's actually reachable + servable right now (read-only).
+  if (method === "GET" && path === "/admin/api/models/available") return handleModelsAvailable(res);
+
   // Add-endpoint tooling: probe → preview → apply (write file) → reload/restart.
   if (method === "POST" && path === "/admin/api/endpoint/probe") return handleEndpointProbe(req, res, ctx);
   if (method === "POST" && path === "/admin/api/endpoint/preview") return handleEndpointPreview(req, res);
   if (method === "POST" && path === "/admin/api/endpoint/apply") return handleEndpointApply(req, res, ctx);
+  // Remove / edit-egress: same atomic validated write + audit path as apply.
+  if (method === "POST" && path === "/admin/api/endpoint/remove") return handleEndpointRemove(req, res, ctx);
+  if (method === "POST" && path === "/admin/api/endpoint/egress") return handleEndpointEgress(req, res, ctx);
   if (method === "POST" && path === "/admin/api/reload") {
     getAuditor().emit(audit.adminAction(ctx.principal!.id, "config.reload", { sourceIp: ctx.sourceIp }));
     return handleReloadConfig(req, res);
