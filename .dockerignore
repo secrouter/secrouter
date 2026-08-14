@@ -10,8 +10,8 @@ skills
 scripts
 deploy
 *.md
-freerouter.config.json
-freerouter.config.hardened.example.json
+secrouter.config.json
+secrouter.config.hardened.example.json
 .DS_Store
 .prettierignore
 .prettierrc

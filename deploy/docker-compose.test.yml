@@ -43,7 +43,7 @@ services:
     # writer; `rm` the secrouter-data volume to reset to the template.
     entrypoint: ["sh", "-c", "cp -n /etc/secrouter/config.template.json /var/lib/secrouter/config.json; exec node dist/server.js"]
     environment:
-      FREEROUTER_CONFIG: /var/lib/secrouter/config.json
+      SECROUTER_CONFIG: /var/lib/secrouter/config.json
       SECROUTER_PORT: "18800"
       SECROUTER_HOST: "0.0.0.0"
       LOCAL_LLM_API_KEY: "test-key" # mock model ignores it; satisfies the env-auth provider

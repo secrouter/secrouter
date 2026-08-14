@@ -83,7 +83,7 @@ async function main() {
     }),
   );
   writeFileSync(join(dir, "auth.json"), JSON.stringify({ version: 1, profiles: {}, lastGood: {} }));
-  process.env.FREEROUTER_CONFIG = cfgPath;
+  process.env.SECROUTER_CONFIG = cfgPath;
   process.env.AZ_KEY = "azure-secret-key";
   process.env.BR_KEY = "bedrock-api-key";
   process.env.AZ_SECRET = "entra-client-secret";

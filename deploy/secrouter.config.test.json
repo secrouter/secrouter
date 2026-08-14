@@ -1,5 +1,5 @@
 {
-  "_README": "TEST-DEPLOYMENT config for docker-compose.test.yml. Secured, but wired to the mock IdP + mock model — NOT for CUI. requireFips is off and TLS is left to the (absent) front end. For production start from ../freerouter.config.hardened.example.json.",
+  "_README": "TEST-DEPLOYMENT config for docker-compose.test.yml. Secured, but wired to the mock IdP + mock model — NOT for CUI. requireFips is off and TLS is left to the (absent) front end. For production start from ../secrouter.config.hardened.example.json.",
 
   "port": 18800,
   "host": "0.0.0.0",

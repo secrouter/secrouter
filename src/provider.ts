@@ -51,7 +51,7 @@ export class UpstreamError extends Error {
 }
 
 
-// Provider configs loaded from freerouter.config.json
+// Provider configs loaded from secrouter.config.json
 export type ProviderConfig = {
   /** All configured endpoints (config.endpointsOf normalizes to this shape upstream). */
   baseUrl: string | string[];
@@ -103,7 +103,7 @@ export type ChatRequest = {
   tool_choice?: unknown;
 };
 
-// Provider configs — loaded from freerouter.config.json via getProviderConfig()
+// Provider configs — loaded from secrouter.config.json via getProviderConfig()
 
 /**
  * Get provider config from the loaded config file.

@@ -50,14 +50,14 @@ function tempConfigPath(partial: Record<string, unknown>): string {
 }
 
 /**
- * Load with a clean env-var slate for FREEROUTER_CONFIG / SECROUTER_SECLLM_ENDPOINTS.
+ * Load with a clean env-var slate for SECROUTER_CONFIG / SECROUTER_SECLLM_ENDPOINTS.
  * Also clears SECROUTER_EGRESS_FILE (a different intake, covered in
  * egress.test.ts) so it can never leak in from another test file sharing
  * this process.
  */
 function loadWith(opts: { configPath?: string; secllmEndpoints?: string; secllmModels?: string }): FreeRouterConfig {
-  if (opts.configPath) process.env.FREEROUTER_CONFIG = opts.configPath;
-  else delete process.env.FREEROUTER_CONFIG;
+  if (opts.configPath) process.env.SECROUTER_CONFIG = opts.configPath;
+  else delete process.env.SECROUTER_CONFIG;
   if (opts.secllmEndpoints !== undefined) process.env.SECROUTER_SECLLM_ENDPOINTS = opts.secllmEndpoints;
   else delete process.env.SECROUTER_SECLLM_ENDPOINTS;
   if (opts.secllmModels !== undefined) process.env.SECROUTER_SECLLM_MODELS = opts.secllmModels;
@@ -425,7 +425,7 @@ console.log("\nNon-destructive: an explicit providers.secllm ⇒ SECROUTER_SECLL
   ok("operator's MEDIUM primary untouched (remap did not apply)", cfg.tiers.MEDIUM.primary === "secllm/my-own");
 }
 
-delete process.env.FREEROUTER_CONFIG;
+delete process.env.SECROUTER_CONFIG;
 delete process.env.SECROUTER_SECLLM_ENDPOINTS;
 delete process.env.SECROUTER_SECLLM_MODELS;
 
