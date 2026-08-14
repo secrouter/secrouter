@@ -4,7 +4,7 @@
  * (browser), then drives the admin-gated /admin/api/* endpoints.
  *
  * Built with the DOM API (no template literals) so the markup can live safely
- * inside this exported string. Tabs: Usage, Users & Policies, Models, Audit.
+ * inside this exported string. Tabs: Monitor, Policies, Models, Access Log.
  */
 
 export const ADMIN_HTML = `<!doctype html>
@@ -83,6 +83,14 @@ export const ADMIN_HTML = `<!doctype html>
   td { font:12.5px var(--mono); }
   th { color:var(--muted); font:10px var(--mono); font-weight:700; text-transform:uppercase; letter-spacing:.1em; border-bottom:1px solid var(--border); }
   tr:last-child td { border-bottom:none; }
+  /* Access-log: independently scrollable table with a sticky, clickable sort header */
+  .logwrap { max-height:62vh; overflow:auto; border:1px solid var(--border); border-radius:2px; background:var(--panel2); }
+  .logwrap table { margin:0; }
+  .logwrap thead th { position:sticky; top:0; z-index:1; background:var(--panel); }
+  th.sort { cursor:pointer; user-select:none; white-space:nowrap; }
+  th.sort:hover { color:var(--fg); }
+  tr.logrow { cursor:pointer; } tr.logrow:hover td { background:var(--accent-soft); }
+  tr.logdetail pre { margin:0; max-height:240px; }
   .bar { height:12px; background:var(--accent); border-radius:1px; }
   .pill { display:inline-block; padding:2px 7px; border-radius:2px; font:10px var(--mono); text-transform:uppercase; letter-spacing:.06em;
           background:var(--pill-bg); color:var(--muted); border:1px solid var(--border); }
@@ -205,7 +213,7 @@ export const ADMIN_HTML = `<!doctype html>
       el("button",{class:"btn ghost theme-toggle",title:"Toggle light / dark",text:(effectiveTheme()==="dark"?"LIGHT":"DARK"),onclick:toggleTheme})
     ]);
     var nav = el("nav");
-    [["monitor","Monitor"],["policies","Policies"],["models","Models"]].forEach(function(t){
+    [["monitor","Monitor"],["policies","Policies"],["models","Models"],["audit","Access Log"]].forEach(function(t){
       nav.appendChild(el("button",{class:(TAB===t[0]?"active":""),text:t[1],onclick:function(){TAB=t[0];shell();}}));
     });
     var main = el("main",{id:"main"}, el("div",{class:"muted",text:"Loading…"}));
@@ -213,18 +221,21 @@ export const ADMIN_HTML = `<!doctype html>
     if (TAB==="monitor") renderMonitor(main);
     else if (TAB==="policies") renderUsers(main);
     else if (TAB==="models") renderModels(main);
+    else if (TAB==="audit") renderAuditLog(main);
   }
 
-  // Monitor = Compliance + Provider health + Usage + Audit (read-only), stacked.
+  // Monitor = Compliance + Provider health + MCP + Usage (read-only), stacked.
+  // (The audit trail moved to its own "Access Log" tab — see renderAuditLog.)
   function renderMonitor(main){
     main.innerHTML="";
-    var compBox = el("div"); var healthBox = el("div"); var mcpBox = el("div"); var usageBox = el("div"); var auditBox = el("div");
-    main.appendChild(compBox); main.appendChild(healthBox); main.appendChild(mcpBox); main.appendChild(usageBox); main.appendChild(auditBox);
+    var compBox = el("div"); var healthBox = el("div"); var mcpBox = el("div"); var usageBox = el("div");
+    main.appendChild(compBox); main.appendChild(healthBox); main.appendChild(mcpBox); main.appendChild(usageBox);
     renderCompliance(compBox);
     renderHealth(healthBox);  // each renders into (and clears) its own container
     renderMcpServers(mcpBox);
     renderUsage(usageBox);
-    renderAudit(auditBox);
+    // The audit trail is now its own top-level "Access Log" tab (renderAuditLog) — searchable,
+    // filterable, sortable, and independently scrollable rather than a short tail under Monitor.
   }
 
   // ── MCP tool servers: the governed tool gateway registry (Phase D) ──
@@ -729,28 +740,101 @@ export const ADMIN_HTML = `<!doctype html>
     main.appendChild(buildEndpointWizard(levels));
   }
 
-  // ── Audit tab ──
-  function renderAudit(main){
+  // ── Access Log tab: the hash-chained audit trail — searchable, filterable, sortable, scrollable ──
+  var AUDIT_TYPES = ["auth.success","auth.failure","authz.deny","authz.downgrade","egress.deny","egress.file_loaded","provider.circuit","quota.exceeded","tool.call","tool.deny","usage","admin.action","anomaly"];
+  var AUDIT_OUTCOMES = ["allow","deny","ok","error","downgrade"];
+  var AUDIT_COLS = [["ts","time"],["type","type"],["principal","principal"],["model","model"],["tier","tier"],["outcome","outcome"]];
+  var AUDIT_NCOLS = AUDIT_COLS.length + 1; // + trace
+
+  function renderAuditLog(main){
     main.innerHTML="";
-    api("/admin/api/audit?limit=200").then(function(r){return r.json();}).then(function(rows){
-      var card = el("div",{class:"card"}, el("h3",{text:"Recent audit events (hash-chained, newest first)"}));
-      var t = el("table",{}, el("tr",{},[el("th",{text:"time"}),el("th",{text:"type"}),el("th",{text:"principal"}),el("th",{text:"model"}),el("th",{text:"outcome"}),el("th",{text:"trace"})]));
-      rows.forEach(function(e){
-        var cls = e.outcome==="deny"?"bad":(e.type==="anomaly"?"warn":"");
-        var tid = (e.detail && e.detail.traceId) || "";
-        var via = e.detail && e.detail.delegatedBy;   // on-behalf-of: the trusted UI service
-        var principalCell = el("td",{text:e.principalId||"—"});
-        if (via) principalCell.appendChild(el("span",{class:"muted",style:"font-size:11px;",title:"delegated by "+via,text:" · via "+via}));
-        t.appendChild(el("tr",{},[
-          el("td",{class:"muted",text:(e.ts||"").replace("T"," ").slice(0,19)}),
-          el("td",{}, el("span",{class:"pill "+cls,text:e.type})),
-          principalCell, el("td",{text:e.model||"—"}),
-          el("td",{text:e.outcome||"—"}),
-          el("td",{class:"muted",title:tid,text:tid?tid.slice(0,8):"—"})
-        ]));
-      });
-      card.appendChild(t); main.appendChild(card);
-    }).catch(function(e){ main.appendChild(el("div",{class:"muted",text:"Could not load audit: "+e.message})); });
+    // Server-authoritative view state: filters + sort + paging cursor. Data rows loaded so far = offset.
+    var A = { search:"", type:"", outcome:"", sinceHours:0, sort:"ts", dir:"desc", offset:0, limit:100, total:0, loading:false, done:false };
+
+    var card = el("div",{class:"card"});
+    card.appendChild(el("h3",{},["Access log ", el("span",{class:"pill",text:"hash-chained · AU-3"})]));
+
+    var searchIn = el("input",{type:"text",placeholder:"search principal, model, request id, detail…",style:"flex:1;min-width:260px;"});
+    var typeSel = el("select"); typeSel.appendChild(el("option",{value:"",text:"all types"})); AUDIT_TYPES.forEach(function(v){ typeSel.appendChild(el("option",{value:v,text:v})); });
+    var outSel = el("select"); outSel.appendChild(el("option",{value:"",text:"all outcomes"})); AUDIT_OUTCOMES.forEach(function(v){ outSel.appendChild(el("option",{value:v,text:v})); });
+    var sinceSel = el("select"); [["0","all time"],["1","last hour"],["24","last 24h"],["168","last 7d"],["720","last 30d"]].forEach(function(o){ sinceSel.appendChild(el("option",{value:o[0],text:o[1]})); });
+    var countLbl = el("span",{class:"muted",style:"font-size:12px;margin-left:auto;"});
+
+    card.appendChild(el("div",{class:"row"},[ el("label",{text:"Search"}), searchIn ]));
+    card.appendChild(el("div",{class:"row"},[ el("label",{text:"Filter"}), typeSel, outSel, sinceSel, el("button",{class:"btn ghost",text:"Refresh",onclick:function(){ reset(); }}), countLbl ]));
+
+    var wrap = el("div",{class:"logwrap"});
+    var table = el("table",{class:"log"});
+    var thead = el("thead"); var headRow = el("tr");
+    AUDIT_COLS.forEach(function(c){
+      var th = el("th",{class:"sort",text:c[1],title:"sort by "+c[1]});
+      th.onclick = function(){ if(A.sort===c[0]){ A.dir = A.dir==="asc"?"desc":"asc"; } else { A.sort=c[0]; A.dir="desc"; } reset(); };
+      headRow.appendChild(th);
+    });
+    headRow.appendChild(el("th",{text:"trace"}));
+    thead.appendChild(headRow);
+    var tbody = el("tbody");
+    table.appendChild(thead); table.appendChild(tbody); wrap.appendChild(table);
+    card.appendChild(wrap); main.appendChild(card);
+
+    function sinceIso(){ return A.sinceHours ? new Date(Date.now() - A.sinceHours*3600*1000).toISOString() : ""; }
+    function query(){
+      var p = new URLSearchParams({ limit:String(A.limit), offset:String(A.offset), sort:A.sort, dir:A.dir });
+      if(A.search) p.set("search",A.search);
+      if(A.type) p.set("type",A.type);
+      if(A.outcome) p.set("outcome",A.outcome);
+      var s = sinceIso(); if(s) p.set("since",s);
+      return "/admin/api/audit?"+p.toString();
+    }
+    function rowEl(e){
+      var cls = e.outcome==="deny"?"bad":(e.type==="anomaly"?"warn":"");
+      var tid = (e.detail && e.detail.traceId) || "";
+      var via = e.detail && e.detail.delegatedBy;   // on-behalf-of: the trusted UI service
+      var principalCell = el("td",{text:e.principalId||"—"});
+      if (via) principalCell.appendChild(el("span",{class:"muted",style:"font-size:11px;",title:"delegated by "+via,text:" · via "+via}));
+      var tr = el("tr",{class:"logrow"},[
+        el("td",{class:"muted",text:(e.ts||"").replace("T"," ").slice(0,19)}),
+        el("td",{}, el("span",{class:"pill "+cls,text:e.type})),
+        principalCell,
+        el("td",{text:e.model||"—"}),
+        el("td",{class:"muted",text:e.tier||"—"}),
+        el("td",{text:e.outcome||"—"}),
+        el("td",{class:"muted",title:tid,text:tid?tid.slice(0,8):"—"})
+      ]);
+      // Click a row to expand its full detail JSON beneath it; click again to collapse.
+      var det=null;
+      tr.onclick=function(){
+        if(det){ det.remove(); det=null; return; }
+        det = el("tr",{class:"logdetail"}, el("td",{colspan:String(AUDIT_NCOLS)}, el("pre",{text:JSON.stringify(e.detail||{},null,2)})));
+        tr.parentNode.insertBefore(det, tr.nextSibling);
+      };
+      return tr;
+    }
+    function load(){
+      if(A.loading || A.done) return;
+      A.loading=true;
+      api(query()).then(function(r){return r.json();}).then(function(d){
+        var rows = d.rows||[];
+        rows.forEach(function(e){ tbody.appendChild(rowEl(e)); });
+        A.offset += rows.length; A.total = d.total||0; A.loading=false;
+        if(rows.length < A.limit || A.offset >= A.total) A.done=true;
+        countLbl.textContent = "showing "+A.offset+" of "+A.total;
+        if(!rows.length && !tbody.querySelector(".logrow")) tbody.appendChild(el("tr",{}, el("td",{class:"muted",colspan:String(AUDIT_NCOLS),text:"No matching events."})));
+        // Content shorter than the viewport won't fire scroll — keep pulling until it fills or ends.
+        if(!A.done && wrap.scrollHeight <= wrap.clientHeight + 8) load();
+      }).catch(function(e){ A.loading=false; if(e.message!=="unauthorized") toast("audit load failed: "+e.message,true); });
+    }
+    function reset(){
+      A.search=searchIn.value.trim(); A.type=typeSel.value; A.outcome=outSel.value; A.sinceHours=parseInt(sinceSel.value,10)||0;
+      A.offset=0; A.done=false; tbody.innerHTML="";
+      var ths = headRow.querySelectorAll("th.sort");
+      AUDIT_COLS.forEach(function(c,i){ ths[i].textContent = c[1] + (A.sort===c[0]?(A.dir==="asc"?" ▲":" ▼"):""); });
+      load();
+    }
+    var deb; searchIn.oninput = function(){ clearTimeout(deb); deb=setTimeout(reset, 300); };
+    typeSel.onchange = reset; outSel.onchange = reset; sinceSel.onchange = reset;
+    wrap.onscroll = function(){ if(wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 48) load(); };
+    reset();
   }
 
   // ── data + boot ──

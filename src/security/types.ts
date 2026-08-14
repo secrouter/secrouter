@@ -309,11 +309,21 @@ export type StoredAuditEvent = AuditInput & {
   hash: string;
 };
 
+/** Columns the access-log view may sort by (whitelist — maps to real columns in the store). */
+export type AuditSortColumn = "ts" | "type" | "principal" | "model" | "tier" | "outcome";
+
 export type AuditFilter = {
   principalId?: string;
   type?: string;
+  /** Exact-match on the outcome column (allow/deny/ok/error/…). */
+  outcome?: string;
+  /** Free-text substring matched across principal, model, type, request id, source ip, and detail. */
+  search?: string;
   sinceIso?: string;
+  sort?: AuditSortColumn;
+  dir?: "asc" | "desc";
   limit?: number;
+  offset?: number;
 };
 
 // ─── Admin config overrides (DB-backed, layered over the file config) ───
@@ -367,6 +377,8 @@ export interface Store {
   lastAuditHash(): string | null;
   verifyAuditChain(): { ok: boolean; brokenAtId?: number; checked: number };
   queryAudit(filter: AuditFilter): StoredAuditEvent[];
+  /** Total rows matching the same filter (ignoring limit/offset/sort) — drives access-log paging. */
+  countAudit(filter: AuditFilter): number;
 
   // Replay cache (IA 3.5.4)
   recordJtiIfNew(jti: string, expEpochSec: number): boolean; // true = new, false = replay

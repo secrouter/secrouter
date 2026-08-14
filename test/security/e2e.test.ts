@@ -196,7 +196,7 @@ async function main() {
   let log = "";
   const child: ChildProcess = spawn("npx", ["tsx", "src/server.ts"], {
     cwd: CWD,
-    env: { ...process.env, FREEROUTER_CONFIG: cfgPath, SECROUTER_PORT: String(ROUTER_PORT) },
+    env: { ...process.env, SECROUTER_CONFIG: cfgPath, SECROUTER_PORT: String(ROUTER_PORT) },
   });
   child.stdout?.on("data", (d) => (log += d));
   child.stderr?.on("data", (d) => (log += d));
@@ -308,7 +308,8 @@ async function main() {
     ok("mcp: principal with no allowedTools → empty tools/list (default-deny)", (emptyR?.result?.tools ?? []).length === 0, JSON.stringify(emptyR?.result));
 
     const tAudit = await (await fetch(`${ROUTER}/admin/api/audit?limit=30`, { headers: hdr(adminTok) })).json();
-    ok("mcp: tool.call + tool.deny audit rows recorded", Array.isArray(tAudit) && tAudit.some((e: { type: string }) => e.type === "tool.call") && tAudit.some((e: { type: string }) => e.type === "tool.deny"));
+    const tAuditRows: Array<{ type: string }> = tAudit?.rows ?? [];
+    ok("mcp: tool.call + tool.deny audit rows recorded", tAuditRows.some((e) => e.type === "tool.call") && tAuditRows.some((e) => e.type === "tool.deny"));
   } finally {
     child.kill("SIGKILL");
     oidc.close();
@@ -420,7 +421,7 @@ async function testLoadBalancing() {
   let lbLog = "";
   const lbChild: ChildProcess = spawn("npx", ["tsx", "src/server.ts"], {
     cwd: CWD,
-    env: { ...process.env, FREEROUTER_CONFIG: cfgPath, SECROUTER_PORT: String(lbPort) },
+    env: { ...process.env, SECROUTER_CONFIG: cfgPath, SECROUTER_PORT: String(lbPort) },
   });
   lbChild.stdout?.on("data", (d) => (lbLog += d));
   lbChild.stderr?.on("data", (d) => (lbLog += d));
@@ -570,7 +571,7 @@ async function testModelAwareRouting() {
   let maLog = "";
   const maChild: ChildProcess = spawn("npx", ["tsx", "src/server.ts"], {
     cwd: CWD,
-    env: { ...process.env, FREEROUTER_CONFIG: cfgPath, SECROUTER_PORT: String(maPort) },
+    env: { ...process.env, SECROUTER_CONFIG: cfgPath, SECROUTER_PORT: String(maPort) },
   });
   maChild.stdout?.on("data", (d) => (maLog += d));
   maChild.stderr?.on("data", (d) => (maLog += d));
@@ -684,7 +685,7 @@ async function testAutoEnableHealthChecks() {
   let aeLog = "";
   const aeChild: ChildProcess = spawn("npx", ["tsx", "src/server.ts"], {
     cwd: CWD,
-    env: { ...process.env, FREEROUTER_CONFIG: cfgPath, SECROUTER_PORT: String(aePort) },
+    env: { ...process.env, SECROUTER_CONFIG: cfgPath, SECROUTER_PORT: String(aePort) },
   });
   aeChild.stdout?.on("data", (d) => (aeLog += d));
   aeChild.stderr?.on("data", (d) => (aeLog += d));
@@ -810,7 +811,7 @@ async function testLoadBalancingSecured() {
   let slbLog = "";
   const slbChild: ChildProcess = spawn("npx", ["tsx", "src/server.ts"], {
     cwd: CWD,
-    env: { ...process.env, FREEROUTER_CONFIG: cfgPath, SECROUTER_PORT: String(slbPort) },
+    env: { ...process.env, SECROUTER_CONFIG: cfgPath, SECROUTER_PORT: String(slbPort) },
   });
   slbChild.stdout?.on("data", (d) => (slbLog += d));
   slbChild.stderr?.on("data", (d) => (slbLog += d));
@@ -1026,7 +1027,7 @@ async function testTurnkeyWithEgressFileAndAuth() {
     cwd: CWD,
     env: {
       ...process.env,
-      FREEROUTER_CONFIG: cfgPath,
+      SECROUTER_CONFIG: cfgPath,
       SECROUTER_PORT: String(tkPort),
       // Part 1: routing + provider auth only, no egress.
       SECROUTER_SECLLM_ENDPOINTS: `${urlA},${urlB}`,
@@ -1106,10 +1107,11 @@ async function testTurnkeyWithEgressFileAndAuth() {
 
     // (4) Audit-evident, not silent: an egress.file_loaded row exists,
     // naming the file path and rule counts.
-    const auditRows: unknown = await (
+    const auditResp: { rows?: unknown[] } = await (
       await fetch(`${TK_ROUTER}/admin/api/audit?type=egress.file_loaded&limit=10`, { headers: hdr })
     ).json();
-    const row = (Array.isArray(auditRows) ? auditRows : []).find(
+    const auditRows: unknown[] = auditResp?.rows ?? [];
+    const row = auditRows.find(
       (e: { detail?: { source?: string } }) => e.detail?.source === "SECROUTER_EGRESS_FILE",
     ) as { detail: { path: string; addedCount: number; totalCount: number; source: string } } | undefined;
     ok("turnkey pool: an egress.file_loaded audit row exists", !!row, JSON.stringify(auditRows));

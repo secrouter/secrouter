@@ -324,7 +324,8 @@ export class SqliteStore implements Store {
     return { ok: true, checked };
   }
 
-  queryAudit(filter: AuditFilter): StoredAuditEvent[] {
+  /** Shared WHERE builder for queryAudit/countAudit — same filter semantics, one source of truth. */
+  private auditWhere(filter: AuditFilter): { where: string; params: string[] } {
     const clauses: string[] = [];
     const params: string[] = [];
     if (filter.principalId) {
@@ -335,16 +336,56 @@ export class SqliteStore implements Store {
       clauses.push("type = ?");
       params.push(filter.type);
     }
+    if (filter.outcome) {
+      clauses.push("outcome = ?");
+      params.push(filter.outcome);
+    }
     if (filter.sinceIso) {
       clauses.push("ts >= ?");
       params.push(filter.sinceIso);
     }
-    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    if (filter.search) {
+      // Free-text substring across the human-meaningful columns + the JSON detail blob.
+      const like = `%${filter.search}%`;
+      clauses.push(
+        "(principal_id LIKE ? OR model LIKE ? OR type LIKE ? OR request_id LIKE ? OR source_ip LIKE ? OR detail LIKE ?)",
+      );
+      params.push(like, like, like, like, like, like);
+    }
+    return { where: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "", params };
+  }
+
+  // Sort key → real column. Whitelist: the value is interpolated into SQL, so it must never
+  // come straight from the caller. Unknown keys fall back to chronological (id) order.
+  private static readonly AUDIT_SORT: Record<string, string> = {
+    ts: "ts",
+    type: "type",
+    principal: "principal_id",
+    model: "model",
+    tier: "tier",
+    outcome: "outcome",
+  };
+
+  countAudit(filter: AuditFilter): number {
+    const { where, params } = this.auditWhere(filter);
+    const row = this.db.prepare(`SELECT COUNT(*) AS n FROM audit_log ${where}`).get(...params) as {
+      n: number;
+    };
+    return row.n;
+  }
+
+  queryAudit(filter: AuditFilter): StoredAuditEvent[] {
+    const { where, params } = this.auditWhere(filter);
+    const sortCol = SqliteStore.AUDIT_SORT[filter.sort ?? "ts"] ?? "ts";
+    const dir = filter.dir === "asc" ? "ASC" : "DESC";
     const limit = Math.min(Math.max(filter.limit ?? 100, 1), 1000);
+    const offset = Math.max(filter.offset ?? 0, 0);
+    // id is the tiebreaker (and the effective sort when sortCol==="ts", since ts is monotonic
+    // with insertion) so paging is stable across identical sort-key values.
     const rows = this.db
       .prepare(
         `SELECT id, ts, type, request_id, principal_id, source_ip, model, tier, outcome, detail, prev_hash, hash
-           FROM audit_log ${where} ORDER BY id DESC LIMIT ${limit}`,
+           FROM audit_log ${where} ORDER BY ${sortCol} ${dir}, id ${dir} LIMIT ${limit} OFFSET ${offset}`,
       )
       .all(...params) as Array<Record<string, unknown>>;
     return rows.map((r) => ({

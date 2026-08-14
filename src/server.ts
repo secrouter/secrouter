@@ -64,7 +64,7 @@ import {
   createHttpsServer,
   audit,
 } from "./security/index.js";
-import type { Principal, UsageResult, OverrideScope } from "./security/types.js";
+import type { Principal, UsageResult, OverrideScope, AuditFilter, AuditSortColumn } from "./security/types.js";
 import { ADMIN_HTML } from "./admin-ui.js";
 import {
   probeEndpoint,
@@ -1312,13 +1312,30 @@ async function handleMcpProbe(req: IncomingMessage, res: ServerResponse, ctx: Ct
   res.end(JSON.stringify(result));
 }
 
-/** GET /admin/api/audit — recent audit events for monitoring. */
+const AUDIT_SORT_COLUMNS = ["ts", "type", "principal", "model", "tier", "outcome"];
+
+/**
+ * GET /admin/api/audit — the access log: filter (type/outcome/principal/since), free-text
+ * search, whitelisted column sort, and limit/offset paging. Returns `{ rows, total }` so the
+ * console can show "N of TOTAL" and drive infinite scroll.
+ */
 function handleAdminAudit(url: string, res: ServerResponse) {
   const q = new URL(url, "http://localhost").searchParams;
-  const limit = Math.min(Math.max(parseInt(q.get("limit") ?? "100", 10) || 100, 1), 1000);
-  const type = q.get("type") ?? undefined;
+  const sortParam = q.get("sort") ?? "";
+  const filter: AuditFilter = {
+    limit: Math.min(Math.max(parseInt(q.get("limit") ?? "100", 10) || 100, 1), 1000),
+    offset: Math.max(parseInt(q.get("offset") ?? "0", 10) || 0, 0),
+    type: q.get("type") || undefined,
+    outcome: q.get("outcome") || undefined,
+    principalId: q.get("principal") || undefined,
+    search: q.get("search") || undefined,
+    sinceIso: q.get("since") || undefined,
+    sort: AUDIT_SORT_COLUMNS.includes(sortParam) ? (sortParam as AuditSortColumn) : undefined,
+    dir: q.get("dir") === "asc" ? "asc" : "desc",
+  };
+  const store = getStore();
   res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(getStore().queryAudit({ limit, type }), null, 2));
+  res.end(JSON.stringify({ rows: store.queryAudit(filter), total: store.countAudit(filter) }, null, 2));
 }
 
 /** POST /admin/api/endpoint/probe — reach a candidate endpoint and list its models. */
