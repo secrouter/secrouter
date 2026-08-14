@@ -22,9 +22,21 @@ import {
   type FreeRouterConfig,
   type ProviderConfigEntry,
   type ModelCatalogEntry,
+  type TierMapping,
 } from "../config.js";
 import { allowedHostsOf } from "./egress/allowlist.js";
 import type { EgressRule } from "./types.js";
+
+/** Thrown when a remove/egress-edit targets a provider that isn't configured
+ * (or, for egress edits, has no existing allow-list rule to edit). Distinct
+ * from a validation failure so callers (server.ts) can map it to 404 instead
+ * of 422. */
+export class ProviderNotFoundError extends Error {
+  constructor(provider: string, reason: string) {
+    super(`provider '${provider}' ${reason}`);
+    this.name = "ProviderNotFoundError";
+  }
+}
 
 export type ApiType = "openai" | "anthropic" | "bedrock" | "azure";
 
@@ -265,4 +277,114 @@ export function previewEndpoint(spec: EndpointSpec): {
 /** Persist the endpoint registration to the config file (validated, atomic, backed up). */
 export function applyEndpoint(spec: EndpointSpec): { path: string } {
   return writeConfigFile((cfg) => applyEndpointToConfig(cfg, spec));
+}
+
+// ─── Remove endpoint ───
+
+export type RemovalSummary = {
+  /** Egress allow-list rule for this provider was dropped. */
+  removedEgress: boolean;
+  /** Tier names (in `tiers`, and `agentic:`-prefixed for `agenticTiers`) whose
+   * primary was blanked or fallback list was pruned because it referenced
+   * `${provider}/...`. */
+  clearedTiers: string[];
+};
+
+/**
+ * Remove a provider's registration in place: delete providers.<name>, drop its
+ * egress allow-list rule, and blank/prune any tier primary/fallback that
+ * referenced one of its models (`${provider}/...`) so the config stays
+ * structurally consistent (tiers themselves aren't shape-validated by
+ * validateSecurityConfig, but leaving a dangling reference would silently
+ * route to a provider that no longer exists). Throws ProviderNotFoundError if
+ * the provider isn't configured.
+ */
+export function removeEndpointFromConfig(cfg: FreeRouterConfig, provider: string): RemovalSummary {
+  if (!cfg.providers?.[provider]) {
+    throw new ProviderNotFoundError(provider, "not found");
+  }
+  delete cfg.providers[provider];
+
+  let removedEgress = false;
+  if (cfg.security?.egress?.allowlist) {
+    const before = cfg.security.egress.allowlist.length;
+    cfg.security.egress.allowlist = cfg.security.egress.allowlist.filter((r) => r.provider !== provider);
+    removedEgress = cfg.security.egress.allowlist.length < before;
+  }
+
+  const prefix = `${provider}/`;
+  const clearedTiers = new Set<string>();
+  const clear = (tiers: Record<string, TierMapping> | undefined, label: string) => {
+    if (!tiers) return;
+    for (const [name, mapping] of Object.entries(tiers)) {
+      let changed = false;
+      if (mapping.primary?.startsWith(prefix)) {
+        mapping.primary = "";
+        changed = true;
+      }
+      const kept = (mapping.fallback ?? []).filter((m) => !m.startsWith(prefix));
+      if (kept.length !== (mapping.fallback ?? []).length) {
+        mapping.fallback = kept;
+        changed = true;
+      }
+      if (changed) clearedTiers.add(`${label}${name}`);
+    }
+  };
+  clear(cfg.tiers, "");
+  clear(cfg.agenticTiers, "agentic:");
+
+  return { removedEgress, clearedTiers: [...clearedTiers] };
+}
+
+/** Persist provider removal to the config file (validated, atomic, backed up). */
+export function removeEndpoint(provider: string): { path: string } & RemovalSummary {
+  let summary: RemovalSummary = { removedEgress: false, clearedTiers: [] };
+  const out = writeConfigFile((cfg) => {
+    summary = removeEndpointFromConfig(cfg, provider);
+  });
+  return { ...out, ...summary };
+}
+
+// ─── Edit egress rule ───
+
+/**
+ * Update an EXISTING provider's egress allow-list rule in place (allowedHost +
+ * authorizedClassifications, and optionally the authorization note). Does not
+ * create a new rule — use endpoint/apply to register a provider for the first
+ * time. Throws ProviderNotFoundError if the provider isn't configured, or has
+ * no existing rule to edit.
+ */
+export function updateEgressRuleInConfig(
+  cfg: FreeRouterConfig,
+  provider: string,
+  allowedHost: string,
+  authorizedClassifications: string[],
+  authorization?: string,
+): EgressRule {
+  if (!cfg.providers?.[provider]) {
+    throw new ProviderNotFoundError(provider, "not found");
+  }
+  const list = cfg.security?.egress?.allowlist;
+  const idx = list?.findIndex((r) => r.provider === provider) ?? -1;
+  if (!list || idx < 0) {
+    throw new ProviderNotFoundError(provider, "has no existing egress rule to update");
+  }
+  const rule: EgressRule = { provider, allowedHost, authorizedClassifications };
+  if (authorization) rule.authorization = authorization;
+  list[idx] = rule;
+  return rule;
+}
+
+/** Persist an egress rule edit to the config file (validated, atomic, backed up). */
+export function updateEgressRule(
+  provider: string,
+  allowedHost: string,
+  authorizedClassifications: string[],
+  authorization?: string,
+): { path: string; rule: EgressRule } {
+  let rule!: EgressRule;
+  const out = writeConfigFile((cfg) => {
+    rule = updateEgressRuleInConfig(cfg, provider, allowedHost, authorizedClassifications, authorization);
+  });
+  return { ...out, rule };
 }
