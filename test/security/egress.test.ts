@@ -164,7 +164,7 @@ console.log("\nSECROUTER_EGRESS_FILE loader (explicit, deployer-authored egress 
 
   const rulesPath = join(dir, "egress-rules.json");
   const loadWith = (file?: string): FreeRouterConfig => {
-    process.env.FREEROUTER_CONFIG = cfgPath;
+    process.env.SECROUTER_CONFIG = cfgPath;
     if (file) process.env.SECROUTER_EGRESS_FILE = file;
     else delete process.env.SECROUTER_EGRESS_FILE;
     delete process.env.SECROUTER_SECLLM_ENDPOINTS;
@@ -234,7 +234,7 @@ console.log("\nSECROUTER_EGRESS_FILE loader (explicit, deployer-authored egress 
       auth: { default: "profiles", profiles: { type: "profiles", profilesPath: authPath } },
     }),
   );
-  process.env.FREEROUTER_CONFIG = bareCfgPath;
+  process.env.SECROUTER_CONFIG = bareCfgPath;
   process.env.SECROUTER_EGRESS_FILE = rulesPath;
   loadConfig();
   const bareCfg = getConfig();
@@ -245,7 +245,7 @@ console.log("\nSECROUTER_EGRESS_FILE loader (explicit, deployer-authored egress 
   );
 
   // (e) Missing file -> FAILS LOUD (throws), does not silently continue.
-  process.env.FREEROUTER_CONFIG = cfgPath;
+  process.env.SECROUTER_CONFIG = cfgPath;
   process.env.SECROUTER_EGRESS_FILE = join(dir, "does-not-exist.json");
   let threwMissing = false;
   try {
@@ -301,7 +301,7 @@ console.log("\nSECROUTER_EGRESS_FILE loader (explicit, deployer-authored egress 
   }
   ok("SECROUTER_EGRESS_FILE unset -> no-op, loadConfig() does not throw", !threwUnset);
 
-  delete process.env.FREEROUTER_CONFIG;
+  delete process.env.SECROUTER_CONFIG;
   delete process.env.SECROUTER_EGRESS_FILE;
 }
 

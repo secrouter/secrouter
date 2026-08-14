@@ -97,7 +97,7 @@ See [`deploy/README.md`](deploy/README.md) for the runbook and the path to produ
 
 Start from the hardened reference config and the hardening guide:
 
-- [`freerouter.config.hardened.example.json`](freerouter.config.hardened.example.json) — full CMMC L3 config (OIDC, per-user policy/quotas, **OpenAI-on-Bedrock GovCloud + Azure OpenAI + self-hosted** egress allow-list, FIPS, audit).
+- [`secrouter.config.hardened.example.json`](secrouter.config.hardened.example.json) — full CMMC L3 config (OIDC, per-user policy/quotas, **OpenAI-on-Bedrock GovCloud + Azure OpenAI + self-hosted** egress allow-list, FIPS, audit).
 - [Deployment hardening guide](docs/compliance/deployment-hardening.md) · [CMMC control matrix](docs/compliance/cmmc-control-matrix.md).
 
 ```bash
@@ -107,7 +107,7 @@ npm run test:integration   # full secured pipeline + admin API (e2e)
 
 ## Configuration
 
-Config is loaded from, in order: `FREEROUTER_CONFIG` env var → `./freerouter.config.json` → `~/.config/freerouter/config.json`. The `security` block is validated at startup and **fails closed** — the server refuses to boot in an unsafe configuration.
+Config is loaded from, in order: `SECROUTER_CONFIG` env var → `./secrouter.config.json` → `~/.config/freerouter/config.json`. The `security` block is validated at startup and **fails closed** — the server refuses to boot in an unsafe configuration.
 
 ```jsonc
 {

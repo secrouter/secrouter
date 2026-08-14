@@ -112,7 +112,7 @@ async function main() {
   const HJ = (t: string) => ({ ...H(t), "Content-Type": "application/json" });
 
   let log = "";
-  const child: ChildProcess = spawn("npx", ["tsx", "src/server.ts"], { cwd: CWD, env: { ...process.env, FREEROUTER_CONFIG: cfgPath, SECROUTER_PORT: String(PORT) } });
+  const child: ChildProcess = spawn("npx", ["tsx", "src/server.ts"], { cwd: CWD, env: { ...process.env, SECROUTER_CONFIG: cfgPath, SECROUTER_PORT: String(PORT) } });
   child.stdout?.on("data", (d) => (log += d)); child.stderr?.on("data", (d) => (log += d));
 
   try {

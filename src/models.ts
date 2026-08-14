@@ -2,10 +2,10 @@
  * Model Definitions — Direct API (no payment layer)
  *
  * Maps YOUR provider models with pricing for the cost calculator.
- * These match the models configured in your freerouter.config.json.
+ * These match the models configured in your secrouter.config.json.
  *
  * Pricing is in USD per 1M tokens.
- * Add/remove models as you add providers to freerouter.config.json.
+ * Add/remove models as you add providers to secrouter.config.json.
  */
 
 import { getConfig } from "./config.js";
@@ -88,7 +88,7 @@ export const MODELS: ModelDef[] = [
     agentic: true,
   },
 
-  // ═══ OpenAI (API key available — add to freerouter.config.json) ═══
+  // ═══ OpenAI (API key available — add to secrouter.config.json) ═══
   {
     id: "openai/gpt-4o",
     name: "GPT-4o",
@@ -183,7 +183,7 @@ export const MODELS: ModelDef[] = [
     reasoning: true,
   },
 
-  // ═══ Google (service account available — add to freerouter.config.json) ═══
+  // ═══ Google (service account available — add to secrouter.config.json) ═══
   {
     id: "google/gemini-2.5-pro",
     name: "Gemini 2.5 Pro",

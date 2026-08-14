@@ -5,7 +5,7 @@
  * Tier models are mapped to providers YOU have API keys for.
  * Edit the `tiers` section to match your configured providers.
  *
- * Available providers (from freerouter.config.json):
+ * Available providers (from secrouter.config.json):
  *   - anthropic: claude-opus-4-6
  *   - kimi-coding: kimi-for-coding (Kimi K2.5)
  *   - openai: gpt-4o, gpt-4o-mini, o3, o3-mini (add as needed)
@@ -160,8 +160,8 @@ export const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
   },
 
   // ─── TIER → MODEL MAPPING (YOUR API KEYS) ───
-  // These use model IDs as configured in your freerouter.config.json providers.
-  // Format: "provider/model-id" matching your freerouter.config.json config.
+  // These use model IDs as configured in your secrouter.config.json providers.
+  // Format: "provider/model-id" matching your secrouter.config.json config.
 
   tiers: {
     SIMPLE: {

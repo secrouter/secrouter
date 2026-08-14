@@ -63,7 +63,7 @@ Status legend: ✅ enforced in code · ⚙️ configurable · 🤝 shared (needs
 
 | Control | Requirement | Implementation | Evidence |
 |---|---|---|---|
-| 3.4.1 / 3.4.2 | Baseline config / enforce settings | Versioned `freerouter.config.hardened.example.json`; startup validation refuses unsafe boot | `config.ts` `validateSecurityConfig` |
+| 3.4.1 / 3.4.2 | Baseline config / enforce settings | Versioned `secrouter.config.hardened.example.json`; startup validation refuses unsafe boot | `config.ts` `validateSecurityConfig` |
 | 3.4.6 | Least functionality | `/health` minimized; stats/config/reload admin‑only; reload re‑validates (no unsafe hot‑swap) | `server.ts` (`handleHealth`, `handleReloadConfig`) |
 | 3.4.7 | Disable nonessential services | Only the documented endpoints exist; Kimi/Moonshot (PRC) removed from all defaults | `server.ts`, `config.ts`, `models.ts` |
 | 3.4.x | Change control on policy edits | Admin-console edits go through an audited DB-overrides layer, re-validated (fail-closed) and applied over the file baseline; every change is an audit event (`override.put`/`override.delete`). Providers + egress stay file-managed. | `src/security/overrides.ts`, `server.ts` `/admin/api/*` |

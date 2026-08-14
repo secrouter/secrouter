@@ -27,9 +27,9 @@ How to deploy SecRouter so it processes CUI within a CMMC Level 3 boundary. Pair
 ## 2. Configure
 
 ```bash
-cp freerouter.config.hardened.example.json /etc/secrouter/config.json
+cp secrouter.config.hardened.example.json /etc/secrouter/config.json
 # replace every <PLACEHOLDER>; set issuer/jwksUri/audience, egress hosts, policy groups, SIEM host
-export FREEROUTER_CONFIG=/etc/secrouter/config.json
+export SECROUTER_CONFIG=/etc/secrouter/config.json
 ```
 
 Key blocks (see the example file): `oidc`, `policy` (tiers/models/budgets per group + per‑user lockdown), `egress.allowlist` (deny‑by‑default; **only** GovCloud/local hosts), `classification`, `audit` (SIEM), `tls`, `requireFips`.
@@ -52,7 +52,7 @@ After=network-online.target
 
 [Service]
 ExecStart=/usr/bin/node /opt/secrouter/dist/server.js
-Environment=FREEROUTER_CONFIG=/etc/secrouter/config.json
+Environment=SECROUTER_CONFIG=/etc/secrouter/config.json
 EnvironmentFile=/etc/secrouter/secrets.env        # AWS_*, LOCAL_LLM_API_KEY (chmod 600)
 User=secrouter
 Group=secrouter
@@ -89,7 +89,7 @@ Run read‑only with a writable volume for the DB:
 ```bash
 podman run --read-only -v secrouter-data:/var/lib/secrouter:Z \
   --cap-drop=ALL --security-opt no-new-privileges \
-  -e FREEROUTER_CONFIG=/etc/secrouter/config.json secrouter:latest
+  -e SECROUTER_CONFIG=/etc/secrouter/config.json secrouter:latest
 ```
 
 ## 6. Reverse proxy (TLS + identity)

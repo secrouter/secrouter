@@ -1,11 +1,11 @@
 /**
- * SecRouter Config — loads external configuration from freerouter.config.json
+ * SecRouter Config — loads external configuration from secrouter.config.json
  * Zero external deps. Falls back to hardcoded defaults if no config file exists.
  *
- * Config file search order:
- *   1. FREEROUTER_CONFIG env var
- *   2. ./freerouter.config.json (cwd)
- *   3. ~/.config/freerouter/config.json
+ * Config file search order (legacy freerouter.* names still accepted for back-compat):
+ *   1. SECROUTER_CONFIG env var (or legacy FREEROUTER_CONFIG)
+ *   2. ./secrouter.config.json (cwd)
+ *   3. ~/.config/secrouter/config.json
  */
 
 import { readFileSync, existsSync, writeFileSync, renameSync, copyFileSync } from "node:fs";
@@ -128,7 +128,7 @@ const DEFAULT_CONFIG: FreeRouterConfig = {
   // NOTE: built-in dev defaults (security disabled), pointed at OpenAI frontier
   // models (gpt-oss) on AWS Bedrock GovCloud. Kimi/Moonshot is intentionally NOT
   // a default — it is a PRC-jurisdiction provider and must never receive CUI. See
-  // freerouter.config.hardened.example.json for the full CUI-hardened config.
+  // secrouter.config.hardened.example.json for the full CUI-hardened config.
   providers: {
     bedrock: {
       baseUrl: "https://bedrock-runtime.us-gov-west-1.amazonaws.com/openai/v1",
@@ -529,17 +529,22 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
  * Find config file path.
  */
 function findConfigFile(): string | null {
-  // 1. Env var
-  const envPath = process.env.FREEROUTER_CONFIG;
+  // 1. Env var — SECROUTER_CONFIG is canonical; FREEROUTER_CONFIG is still honored so
+  //    existing deploys keep working through the rename.
+  const envPath = process.env.SECROUTER_CONFIG || process.env.FREEROUTER_CONFIG;
   if (envPath && existsSync(envPath)) return envPath;
 
-  // 2. CWD
-  const cwdPath = join(process.cwd(), "freerouter.config.json");
-  if (existsSync(cwdPath)) return cwdPath;
+  // 2. CWD — prefer secrouter.config.json, fall back to the legacy freerouter.config.json.
+  for (const name of ["secrouter.config.json", "freerouter.config.json"]) {
+    const p = join(process.cwd(), name);
+    if (existsSync(p)) return p;
+  }
 
-  // 3. ~/.config/freerouter/config.json
-  const homePath = join(homedir(), ".config", "freerouter", "config.json");
-  if (existsSync(homePath)) return homePath;
+  // 3. ~/.config/{secrouter,freerouter}/config.json (new dir first, legacy fallback)
+  for (const dir of ["secrouter", "freerouter"]) {
+    const p = join(homedir(), ".config", dir, "config.json");
+    if (existsSync(p)) return p;
+  }
 
   return null;
 }
@@ -551,7 +556,7 @@ export function loadConfig(): FreeRouterConfig {
   const configPath = findConfigFile();
 
   if (!configPath) {
-    logger.info("No freerouter.config.json found, using built-in defaults");
+    logger.info("No secrouter.config.json found, using built-in defaults");
     return finalize(structuredClone(DEFAULT_CONFIG), null);
   }
 

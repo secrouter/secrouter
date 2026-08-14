@@ -1,7 +1,7 @@
 /**
  * Admin config overrides — DB-backed edits layered over the file config.
  *
- * The file config (freerouter.config.hardened.example.json) is the
+ * The file config (secrouter.config.hardened.example.json) is the
  * change-controlled baseline; the admin console writes deltas here. Every edit
  * is validated against the merged result (fail-closed — an edit that would make
  * the security config invalid is rejected and rolled back) and audited.

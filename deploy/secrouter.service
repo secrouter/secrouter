@@ -7,7 +7,7 @@ Wants=network-online.target
 
 [Service]
 ExecStart=/usr/bin/node /opt/secrouter/dist/server.js
-Environment=FREEROUTER_CONFIG=/etc/secrouter/config.json
+Environment=SECROUTER_CONFIG=/etc/secrouter/config.json
 EnvironmentFile=/etc/secrouter/secrets.env
 User=secrouter
 Group=secrouter

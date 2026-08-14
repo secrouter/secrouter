@@ -64,7 +64,7 @@ const analyst: Principal = { id: "analyst-1", groups: ["analysts"] } as Principa
 const rpc = (method: string, params?: unknown) => ({ jsonrpc: "2.0" as const, id: 1, method, params });
 
 async function main() {
-  process.env.FREEROUTER_CONFIG = cfgPath;
+  process.env.SECROUTER_CONFIG = cfgPath;
   loadConfig();
   initSecurity(loadConfig().security);
 

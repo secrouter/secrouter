@@ -36,5 +36,5 @@
       "profilesPath": "~/.config/secrouter/upstream-auth.json"
     }
   },
-  "_comment": "DEV config — security disabled, NOT for CUI. Defaults to frontier OpenAI models on Amazon Bedrock (GovCloud OpenAI-compatible endpoint); set AWS_BEARER_TOKEN_BEDROCK. To use Azure AI Foundry instead, add an api=\"azure\" provider and point the tiers at azure/<deployment>. For a CMMC/CUI deployment start from freerouter.config.hardened.example.json (OIDC auth, per-user quotas, egress allow-list, FIPS, hash-chained audit)."
+  "_comment": "DEV config — security disabled, NOT for CUI. Defaults to frontier OpenAI models on Amazon Bedrock (GovCloud OpenAI-compatible endpoint); set AWS_BEARER_TOKEN_BEDROCK. To use Azure AI Foundry instead, add an api=\"azure\" provider and point the tiers at azure/<deployment>. For a CMMC/CUI deployment start from secrouter.config.hardened.example.json (OIDC auth, per-user quotas, egress allow-list, FIPS, hash-chained audit)."
 }

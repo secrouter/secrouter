@@ -6,7 +6,7 @@ so you can exercise the whole thing without a real IdP or AWS GovCloud.
 
 > ⚠️ **Test only — not for CUI.** FIPS is off, TLS is left to an (absent) front
 > end, and the upstreams are mocks. For production start from
-> [`../freerouter.config.hardened.example.json`](../freerouter.config.hardened.example.json)
+> [`../secrouter.config.hardened.example.json`](../secrouter.config.hardened.example.json)
 > and the [deployment hardening guide](../docs/compliance/deployment-hardening.md).
 
 ## What's in the stack
@@ -67,7 +67,7 @@ curl -H "Authorization: Bearer $(./get-token.sh admin)" http://localhost:18800/v
 ```bash
 docker build -t secrouter:test ..
 docker run --rm -p 18800:18800 \
-  -e FREEROUTER_CONFIG=/etc/secrouter/config.json -e SECROUTER_HOST=0.0.0.0 \
+  -e SECROUTER_CONFIG=/etc/secrouter/config.json -e SECROUTER_HOST=0.0.0.0 \
   -e LOCAL_LLM_API_KEY=test-key \
   -v "$PWD/secrouter.config.test.json:/etc/secrouter/config.json:ro" \
   -v secrouter-data:/var/lib/secrouter \
@@ -81,7 +81,7 @@ docker run --rm -p 18800:18800 \
 cd .. && npm ci && npm run build            # -> dist/server.js
 # terminal 1: PORT=9081 EXTERNAL_ISSUER=http://localhost:9081 node deploy/mock-oidc/server.mjs
 # terminal 2: PORT=9082 node deploy/mock-llm/server.mjs
-# terminal 3: FREEROUTER_CONFIG=<a localhost-wired config> SECROUTER_PORT=9080 \
+# terminal 3: SECROUTER_CONFIG=<a localhost-wired config> SECROUTER_PORT=9080 \
 #             LOCAL_LLM_API_KEY=test node dist/server.js
 ```
 (Use localhost URLs for `oidc.issuer`/`jwksUri`, the `local` provider `baseUrl`,
@@ -95,7 +95,7 @@ secrets in `/etc/secrouter/secrets.env`, then `systemctl enable --now secrouter`
 
 ## Promoting to a real deployment
 
-1. Swap the config for a copy of `freerouter.config.hardened.example.json`.
+1. Swap the config for a copy of `secrouter.config.hardened.example.json`.
 2. Point `oidc` at your enterprise IdP; register the console as a public PKCE
    client (redirect URI = `https://<host>/admin`). Keep `trackJti` **off**
    (standard access tokens are multi-use).

@@ -154,7 +154,7 @@ const base = {
 const cleanup = () => [tmp, `${tmp}.bak`, `${tmp}.tmp`].forEach((p) => existsSync(p) && unlinkSync(p));
 try {
   writeFileSync(tmp, JSON.stringify(base, null, 2));
-  process.env.FREEROUTER_CONFIG = tmp;
+  process.env.SECROUTER_CONFIG = tmp;
   loadConfig();
   ok("loader picked up the temp config path", getConfigPath() === tmp);
 
@@ -187,7 +187,7 @@ try {
   const after = JSON.parse(readFileSync(tmp, "utf-8"));
   ok("file unchanged after rejected write", !after.security.egress.allowlist.some((r: { provider: string }) => r.provider === "bad"));
 } finally {
-  delete process.env.FREEROUTER_CONFIG;
+  delete process.env.SECROUTER_CONFIG;
   cleanup();
 }
 
