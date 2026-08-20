@@ -89,10 +89,10 @@ console.log("\nSECROUTER_SECLLM_ENDPOINTS set, no config file (pure defaults + e
     JSON.stringify(cfg.providers.secllm?.auth),
   );
 
-  ok("SIMPLE -> secllm/fast", cfg.tiers.SIMPLE.primary === "secllm/fast");
-  ok("MEDIUM -> secllm/balanced", cfg.tiers.MEDIUM.primary === "secllm/balanced");
-  ok("COMPLEX -> secllm/large", cfg.tiers.COMPLEX.primary === "secllm/large");
-  ok("REASONING -> secllm/reasoning", cfg.tiers.REASONING.primary === "secllm/reasoning");
+  ok("SIMPLE -> secllm/Llama-3.2-3B-Instruct", cfg.tiers.SIMPLE.primary === "secllm/Llama-3.2-3B-Instruct");
+  ok("MEDIUM -> secllm/gemma-4-26B-A4B-it", cfg.tiers.MEDIUM.primary === "secllm/gemma-4-26B-A4B-it");
+  ok("COMPLEX -> secllm/Llama-3.3-70B-Instruct", cfg.tiers.COMPLEX.primary === "secllm/Llama-3.3-70B-Instruct");
+  ok("REASONING -> secllm/gpt-oss-20b", cfg.tiers.REASONING.primary === "secllm/gpt-oss-20b");
 
   // SIMPLE's default fallback was already ["bedrock/openai.gpt-oss-120b-1:0"];
   // the prior primary ("bedrock/openai.gpt-oss-20b-1:0") is demoted to the
@@ -108,7 +108,7 @@ console.log("\nSECROUTER_SECLLM_ENDPOINTS set, no config file (pure defaults + e
   );
 
   // agenticTiers gets the same turnkey treatment.
-  ok("agenticTiers.SIMPLE -> secllm/fast too", cfg.agenticTiers?.SIMPLE.primary === "secllm/fast");
+  ok("agenticTiers.SIMPLE -> secllm/Llama-3.2-3B-Instruct too", cfg.agenticTiers?.SIMPLE.primary === "secllm/Llama-3.2-3B-Instruct");
   ok(
     "agenticTiers.SIMPLE fallback demoted the same way",
     JSON.stringify(cfg.agenticTiers?.SIMPLE.fallback) === '["bedrock/openai.gpt-oss-20b-1:0","bedrock/openai.gpt-oss-120b-1:0"]',
@@ -143,7 +143,7 @@ console.log("\nSECROUTER_SECLLM_ENDPOINTS set, WITH a config file that has its o
     "secllm provider auth wired to SECROUTER_SECLLM_TOKEN",
     JSON.stringify(cfg.providers.secllm?.auth) === '{"type":"env","key":"SECROUTER_SECLLM_TOKEN"}',
   );
-  ok("MEDIUM -> secllm/balanced", cfg.tiers.MEDIUM.primary === "secllm/balanced");
+  ok("MEDIUM -> secllm/gemma-4-26B-A4B-it", cfg.tiers.MEDIUM.primary === "secllm/gemma-4-26B-A4B-it");
   ok(
     "MEDIUM: prior primary demoted, pre-existing fallback entry deduped (not doubled)",
     JSON.stringify(cfg.tiers.MEDIUM.fallback) === '["local/llama-big","local/llama-small"]',
@@ -236,7 +236,7 @@ console.log("\nRegression guard: intake never leaks a mutation into shared DEFAU
   const withBareFile = loadWith({ configPath: bareFilePath, secllmEndpoints: "http://gpuZ:8000/v1" });
   ok(
     "intake still applies when providers/tiers come straight from defaults via a file with no such keys",
-    withBareFile.providers.secllm !== undefined && withBareFile.tiers.SIMPLE.primary === "secllm/fast",
+    withBareFile.providers.secllm !== undefined && withBareFile.tiers.SIMPLE.primary === "secllm/Llama-3.2-3B-Instruct",
   );
   const cleanAgain = loadWith({}); // fresh defaults, env var gone, no file
   ok("DEFAULT_CONFIG.providers still not poisoned after the omitted-keys-file path", cleanAgain.providers.secllm === undefined);
@@ -303,7 +303,7 @@ console.log("\nComposes with security.enabled: true (turnkey routes + auths, but
   );
   ok(
     "tiers turnkey-routed to secllm, prior primary (bedrock/x) demoted to fallback",
-    cfg.tiers.SIMPLE.primary === "secllm/fast" && JSON.stringify(cfg.tiers.SIMPLE.fallback) === '["bedrock/x"]',
+    cfg.tiers.SIMPLE.primary === "secllm/Llama-3.2-3B-Instruct" && JSON.stringify(cfg.tiers.SIMPLE.fallback) === '["bedrock/x"]',
   );
   const errors = validateSecurityConfig(cfg);
   ok(
@@ -317,7 +317,7 @@ console.log("\nComposes with security.enabled: true (turnkey routes + auths, but
   );
   ok("still no 'secllm' egress rule anywhere", !cfg.security?.egress?.allowlist.some((r) => r.provider === "secllm"), JSON.stringify(cfg.security?.egress?.allowlist));
   // The core Part 1 guarantee, proven against the real deny-by-default gate:
-  // routing to secllm/fast works, but the pool itself is NOT reachable yet.
+  // routing to secllm/Llama-3.2-3B-Instruct works, but the pool itself is NOT reachable yet.
   ok(
     "a real request to the turnkey pool is egress-DENIED — routing != authorization",
     checkEgress("secllm", "gpu1:8000", "CUI", cfg.security!).allowed === false,
@@ -345,7 +345,7 @@ console.log("\nRegression guard: turnkey intake never touches security.egress (P
   });
   const before = JSON.parse(JSON.stringify(loadWith({ configPath: cfgPath }).security?.egress));
   const after = loadWith({ configPath: cfgPath, secllmEndpoints: "http://gpu1:8000/v1,http://gpu2:8000/v1" });
-  ok("provider + tiers WERE still turnkey-registered (that gate is independent of egress)", after.providers.secllm !== undefined && after.tiers.SIMPLE.primary === "secllm/fast");
+  ok("provider + tiers WERE still turnkey-registered (that gate is independent of egress)", after.providers.secllm !== undefined && after.tiers.SIMPLE.primary === "secllm/Llama-3.2-3B-Instruct");
   ok(
     "security.egress is BYTE-FOR-BYTE identical whether or not the turnkey intake ran",
     JSON.stringify(after.security?.egress) === JSON.stringify(before),
@@ -353,59 +353,53 @@ console.log("\nRegression guard: turnkey intake never touches security.egress (P
   );
 }
 
-console.log("\nparseSecllmModels: parses tag=id pairs, skips junk (never throws):");
+console.log("\nparseSecllmModels: parses tier=id pairs (keyed by UPPERCASE tier), skips junk (never throws):");
 {
-  const m = parseSecllmModels(" balanced = lmstudio/gemma-26b , fast=llama-3b ,, bogus=x , large , reasoning= ");
-  ok("balanced parsed + trimmed", m.balanced === "lmstudio/gemma-26b", JSON.stringify(m));
-  ok("fast parsed + trimmed", m.fast === "llama-3b");
-  ok("unknown tag 'bogus' skipped", !("bogus" in m));
-  ok("malformed 'large' (no '=') skipped", !("large" in m));
-  ok("empty id 'reasoning=' skipped", !("reasoning" in m));
+  const m = parseSecllmModels(" medium = lmstudio/gemma-26b , simple=llama-3b ,, bogus=x , complex , reasoning= ");
+  ok("medium parsed + trimmed (keyed MEDIUM)", m.MEDIUM === "lmstudio/gemma-26b", JSON.stringify(m));
+  ok("simple parsed + trimmed (keyed SIMPLE)", m.SIMPLE === "llama-3b");
+  ok("unknown tier 'bogus' skipped", !("BOGUS" in m));
+  ok("malformed 'complex' (no '=') skipped", !("COMPLEX" in m));
+  ok("empty id 'reasoning=' skipped", !("REASONING" in m));
   ok("blank entries between commas ignored", Object.keys(m).length === 2);
   ok("undefined → empty map", Object.keys(parseSecllmModels(undefined)).length === 0);
-  ok("case-insensitive tag key", parseSecllmModels("BALANCED=z").balanced === "z");
-  ok("id may itself contain '=' (only the first splits)", parseSecllmModels("fast=a=b").fast === "a=b");
+  ok("case-insensitive tier key", parseSecllmModels("MEDIUM=z").MEDIUM === "z");
+  ok("id may itself contain '=' (only the first splits)", parseSecllmModels("simple=a=b").SIMPLE === "a=b");
 }
 
-console.log("\nSECROUTER_SECLLM_MODELS remaps tags to real backend ids (balanced → the 26B tool-caller):");
+console.log("\nSECROUTER_SECLLM_MODELS overrides a tier's real model id (medium → a custom 26B tool-caller):");
 {
   const cfg = loadWith({
     secllmEndpoints: "http://mlx-a:8082/v1",
-    secllmModels: "fast=mlx-community/Llama-3.2-3B-Instruct-4bit,balanced=lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit",
+    secllmModels: "simple=mlx-community/Llama-3.2-3B-Instruct-4bit,medium=lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit",
   });
-  ok("provider still registered (endpoints drive the provider; models only relabel tiers)", cfg.providers.secllm !== undefined);
+  ok("provider still registered (endpoints drive the provider; models only re-point tiers)", cfg.providers.secllm !== undefined);
   ok(
-    "MEDIUM (the 'balanced' tag) → secllm/<gemma id>",
+    "MEDIUM overridden → secllm/<custom gemma id>",
     cfg.tiers.MEDIUM.primary === "secllm/lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit",
     cfg.tiers.MEDIUM.primary,
   );
   ok(
-    "SIMPLE (the 'fast' tag) → secllm/<llama id>",
+    "SIMPLE overridden → secllm/<custom llama id>",
     cfg.tiers.SIMPLE.primary === "secllm/mlx-community/Llama-3.2-3B-Instruct-4bit",
     cfg.tiers.SIMPLE.primary,
   );
-  ok("COMPLEX (the 'large' tag, unspecified) keeps the literal default", cfg.tiers.COMPLEX.primary === "secllm/large");
-  ok("REASONING (unspecified) keeps the literal default", cfg.tiers.REASONING.primary === "secllm/reasoning");
+  ok("COMPLEX (unspecified) keeps the default real name", cfg.tiers.COMPLEX.primary === "secllm/Llama-3.3-70B-Instruct");
+  ok("REASONING (unspecified) keeps the default real name", cfg.tiers.REASONING.primary === "secllm/gpt-oss-20b");
   ok(
-    "agenticTiers.MEDIUM is remapped identically (agentic path uses the same catalog)",
+    "agenticTiers.MEDIUM is overridden identically (agentic path uses the same catalog)",
     cfg.agenticTiers?.MEDIUM.primary === "secllm/lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit",
   );
   ok(
-    "fallback demotion is unaffected by the remap — prior MEDIUM primary (bedrock 120b) still demoted",
+    "fallback demotion is unaffected by the override — prior MEDIUM primary (bedrock 120b) still demoted",
     JSON.stringify(cfg.tiers.MEDIUM.fallback) === '["bedrock/openai.gpt-oss-120b-1:0"]',
     JSON.stringify(cfg.tiers.MEDIUM.fallback),
-  );
-  ok(
-    "cfg.secllmModelAliases exposes the tag→id map (so an explicit secllm/<tag> resolves at forward time)",
-    JSON.stringify(cfg.secllmModelAliases) ===
-      JSON.stringify({ fast: "mlx-community/Llama-3.2-3B-Instruct-4bit", balanced: "lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit" }),
-    JSON.stringify(cfg.secllmModelAliases),
   );
 }
 
 console.log("\nSECROUTER_SECLLM_MODELS with NO endpoints ⇒ strict no-op (the intake needs endpoints to run):");
 {
-  const cfg = loadWith({ secllmModels: "balanced=lmstudio/gemma-26b" });
+  const cfg = loadWith({ secllmModels: "medium=lmstudio/gemma-26b" });
   ok("no secllm provider (endpoints unset ⇒ intake never runs)", cfg.providers.secllm === undefined);
   ok("tiers stay at the built-in bedrock defaults", cfg.tiers.MEDIUM.primary === "bedrock/openai.gpt-oss-120b-1:0");
 }
@@ -421,7 +415,7 @@ console.log("\nNon-destructive: an explicit providers.secllm ⇒ SECROUTER_SECLL
       REASONING: { primary: "secllm/my-own", fallback: [] },
     },
   });
-  const cfg = loadWith({ configPath: cfgPath, secllmEndpoints: "http://ignored:8000/v1", secllmModels: "balanced=should-be-ignored" });
+  const cfg = loadWith({ configPath: cfgPath, secllmEndpoints: "http://ignored:8000/v1", secllmModels: "medium=should-be-ignored" });
   ok("operator's MEDIUM primary untouched (remap did not apply)", cfg.tiers.MEDIUM.primary === "secllm/my-own");
 }
 

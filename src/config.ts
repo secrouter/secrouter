@@ -98,13 +98,6 @@ export type FreeRouterConfig = {
   /** Governed embeddings: default model for POST /v1/embeddings when the client sends "auto"/none. */
   embeddings?: { default?: string };
   agenticTiers?: Record<string, TierMapping>;
-  /**
-   * SecLLM tier-tag → real backend model id, populated from SECROUTER_SECLLM_MODELS by
-   * applySecllmEndpointsIntake. Lets an EXPLICIT `secllm/<tag>` request (e.g. `secllm/balanced`)
-   * resolve to the mapped model at forward time (see provider.resolveSecllmModel), so requesting
-   * the tag by name yields the same model the classifier's tiers route to. Absent = no remap.
-   */
-  secllmModelAliases?: Record<string, string>;
   tierBoundaries?: {
     simpleMedium: number;
     mediumComplex: number;
@@ -186,36 +179,42 @@ function applyOverlay(cfg: FreeRouterConfig): FreeRouterConfig {
 }
 
 /**
- * The four SecLLM default-catalog tags, in tier order. `applySecllmEndpointsIntake`
- * turnkey-routes SIMPLE/MEDIUM/COMPLEX/REASONING to `secllm/<tag>`; SECROUTER_SECLLM_MODELS
- * can remap any tag to a real backend model id (see parseSecllmModels).
+ * Default binding of each classification tier to the REAL SecLLM model name
+ * (HF basename) it routes to. `applySecllmEndpointsIntake` turnkey-routes
+ * SIMPLE/MEDIUM/COMPLEX/REASONING to `secllm/<real-model>` straight from this
+ * map; SECROUTER_SECLLM_MODELS can override any tier's model for a pool that
+ * serves different real names (see parseSecllmModels). There are no tier tags —
+ * the tier binds directly to the served model id.
  */
-const SECLLM_TIER_TAGS: ReadonlyArray<readonly [tier: string, tag: string]> = [
-  ["SIMPLE", "fast"],
-  ["MEDIUM", "balanced"],
-  ["COMPLEX", "large"],
-  ["REASONING", "reasoning"],
-];
-const SECLLM_TAGS = new Set(SECLLM_TIER_TAGS.map(([, tag]) => tag));
+const SECLLM_TIER_MODELS: Record<string, string> = {
+  SIMPLE: "Llama-3.2-3B-Instruct",
+  MEDIUM: "gemma-4-26B-A4B-it",
+  COMPLEX: "Llama-3.3-70B-Instruct",
+  REASONING: "gpt-oss-20b",
+};
+const SECLLM_TIER_KEYS = new Set(Object.keys(SECLLM_TIER_MODELS).map((t) => t.toLowerCase()));
 
 /**
  * Parse SECROUTER_SECLLM_MODELS — the optional companion to
- * SECROUTER_SECLLM_ENDPOINTS that remaps SecLLM catalog tags to the REAL model
- * ids a custom pool actually serves. Format: comma-separated `tag=modelId`
- * pairs, tag ∈ {fast,balanced,large,reasoning} (case-insensitive; they name the
- * SIMPLE/MEDIUM/COMPLEX/REASONING tiers). Returns a possibly-empty tag→id map;
- * malformed pairs, unknown tags, and empty ids are skipped with a warning
- * rather than failing the load (a typo shouldn't take the router down).
+ * SECROUTER_SECLLM_ENDPOINTS that overrides which REAL model id each tier binds
+ * to when a custom pool serves names other than the SECLLM_TIER_MODELS defaults.
+ * Format: comma-separated `tier=modelId` pairs, tier ∈
+ * {simple,medium,complex,reasoning} (case-insensitive). Returns a possibly-empty
+ * map keyed by the UPPERCASE tier name (SIMPLE/MEDIUM/COMPLEX/REASONING) → real
+ * model id; malformed pairs, unknown tiers, and empty ids are skipped with a
+ * warning rather than failing the load (a typo shouldn't take the router down).
  *
- * Why: the turnkey intake otherwise forwards the literal tag ("balanced") as the
- * model id, which only exists in SecLLM's OWN default catalog. A pool serving a
- * different catalog — e.g. an OpenAI-compatible MLX/vLLM server whose ids are
- * "org/model" — 404s those tags. This var bridges the two without hand-authoring
- * `providers.secllm` + `tiers`. Example (Google Gemma tool-caller + a small Llama):
- *   SECROUTER_SECLLM_MODELS="fast=mlx-community/Llama-3.2-3B-Instruct-4bit,\
- *   balanced=lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit"
- * → the "balanced" tag (MEDIUM tier) routes to the 26B model, "fast" (SIMPLE) to
- * the 3B; unspecified tags keep their literal default.
+ * Used ONLY to override the tier→model defaults in the turnkey intake — it is
+ * not an alias map and is never consulted at forward time. Why: the intake
+ * otherwise binds each tier to the default real name (e.g. MEDIUM →
+ * gemma-4-26B-A4B-it), which a pool serving a differently-named catalog — e.g.
+ * an OpenAI-compatible MLX/vLLM server whose ids are "org/model" — would 404.
+ * This var re-points a tier without hand-authoring `providers.secllm` + `tiers`.
+ * Example (a quantized Gemma tool-caller + a small Llama):
+ *   SECROUTER_SECLLM_MODELS="simple=mlx-community/Llama-3.2-3B-Instruct-4bit,\
+ *   medium=lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit"
+ * → MEDIUM routes to that 26B id, SIMPLE to that 3B id; unspecified tiers keep
+ * their SECLLM_TIER_MODELS default.
  */
 export function parseSecllmModels(raw: string | undefined): Record<string, string> {
   const out: Record<string, string> = {};
@@ -225,20 +224,20 @@ export function parseSecllmModels(raw: string | undefined): Record<string, strin
     if (!entry) continue;
     const eq = entry.indexOf("=");
     if (eq <= 0) {
-      logger.warn(`SECROUTER_SECLLM_MODELS: ignoring malformed entry ${JSON.stringify(entry)} (expected tag=modelId)`);
+      logger.warn(`SECROUTER_SECLLM_MODELS: ignoring malformed entry ${JSON.stringify(entry)} (expected tier=modelId)`);
       continue;
     }
-    const tag = entry.slice(0, eq).trim().toLowerCase();
+    const tier = entry.slice(0, eq).trim().toLowerCase();
     const id = entry.slice(eq + 1).trim();
-    if (!SECLLM_TAGS.has(tag)) {
-      logger.warn(`SECROUTER_SECLLM_MODELS: ignoring unknown tag ${JSON.stringify(tag)} (expected one of ${[...SECLLM_TAGS].join("/")})`);
+    if (!SECLLM_TIER_KEYS.has(tier)) {
+      logger.warn(`SECROUTER_SECLLM_MODELS: ignoring unknown tier ${JSON.stringify(tier)} (expected one of ${[...SECLLM_TIER_KEYS].join("/")})`);
       continue;
     }
     if (!id) {
-      logger.warn(`SECROUTER_SECLLM_MODELS: ignoring empty model id for tag ${JSON.stringify(tag)}`);
+      logger.warn(`SECROUTER_SECLLM_MODELS: ignoring empty model id for tier ${JSON.stringify(tier)}`);
       continue;
     }
-    out[tag] = id;
+    out[tier.toUpperCase()] = id;
   }
   return out;
 }
@@ -278,10 +277,11 @@ export function parseSecllmModels(raw: string | undefined): Record<string, strin
  * primary or fallback — to `secllm/*`; either signal means the operator has
  * already taken ownership of this provider.
  *
- * The model ids default to SecLLM's default-catalog friendly names
- * (fast/balanced/large/reasoning). A pool serving a CUSTOM catalog (different
- * ids) can remap each tag to its real backend model id via
- * SECROUTER_SECLLM_MODELS (`tag=modelId,...` — see parseSecllmModels) WITHOUT
+ * Each tier binds to its real SecLLM model name from SECLLM_TIER_MODELS
+ * (SIMPLE → Llama-3.2-3B-Instruct, MEDIUM → gemma-4-26B-A4B-it, COMPLEX →
+ * Llama-3.3-70B-Instruct, REASONING → gpt-oss-20b). A pool serving a CUSTOM
+ * catalog (different real names) can override any tier's model id via
+ * SECROUTER_SECLLM_MODELS (`tier=modelId,...` — see parseSecllmModels) WITHOUT
  * hand-authoring `providers.secllm` + `tiers`/`agenticTiers`. Hand-config still
  * wins: the whole intake no-ops if the operator already owns `providers.secllm`
  * or any `secllm/*` tier route.
@@ -316,13 +316,13 @@ function applySecllmEndpointsIntake(cfg: FreeRouterConfig): void {
     auth: { type: "env", key: "SECROUTER_SECLLM_TOKEN" },
   };
 
-  // Tier → `secllm/<model>`. Defaults to the literal SecLLM catalog tag
-  // (fast/balanced/large/reasoning); SECROUTER_SECLLM_MODELS remaps any tag to the
-  // real backend model id a custom pool serves (e.g. balanced → the 26B tool-caller).
+  // Tier → `secllm/<real-model>`. Binds each tier to its default real SecLLM
+  // model name (SECLLM_TIER_MODELS); SECROUTER_SECLLM_MODELS overrides a tier's
+  // model id for a pool serving a different real name (e.g. MEDIUM → a 26B tool-caller).
   const modelOverrides = parseSecllmModels(process.env.SECROUTER_SECLLM_MODELS);
   const TURNKEY_MODELS: Record<string, string> = {};
-  for (const [tier, tag] of SECLLM_TIER_TAGS) {
-    TURNKEY_MODELS[tier] = `${SECLLM_PREFIX}${modelOverrides[tag] ?? tag}`;
+  for (const [tier, model] of Object.entries(SECLLM_TIER_MODELS)) {
+    TURNKEY_MODELS[tier] = `${SECLLM_PREFIX}${modelOverrides[tier] ?? model}`;
   }
   const rewire = (tiers: Record<string, TierMapping> | undefined): Record<string, TierMapping> => {
     const fresh: Record<string, TierMapping> = { ...(tiers ?? {}) };
@@ -339,15 +339,9 @@ function applySecllmEndpointsIntake(cfg: FreeRouterConfig): void {
   };
   cfg.tiers = rewire(cfg.tiers);
   cfg.agenticTiers = rewire(cfg.agenticTiers);
-  // Retain the tag→id map so an EXPLICIT `secllm/<tag>` request resolves to the same model the
-  // tiers above route to (see provider.resolveSecllmModel) — otherwise the literal tag would be
-  // forwarded and 404 on a custom pool. Only set when a remap was actually supplied.
-  if (Object.keys(modelOverrides).length > 0) {
-    cfg.secllmModelAliases = { ...modelOverrides };
-  }
 
   const remapNote = Object.keys(modelOverrides).length
-    ? `Tag remaps (SECROUTER_SECLLM_MODELS): ${Object.entries(modelOverrides).map(([t, m]) => `${t}→${m}`).join(", ")}. `
+    ? `Tier model overrides (SECROUTER_SECLLM_MODELS): ${Object.entries(modelOverrides).map(([t, m]) => `${t}→${m}`).join(", ")}. `
     : "";
   logger.info(
     `SECROUTER_SECLLM_ENDPOINTS set — auto-registered provider 'secllm' (${urls.length} endpoint${urls.length === 1 ? "" : "s"}, auth from $SECROUTER_SECLLM_TOKEN) ` +

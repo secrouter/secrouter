@@ -924,7 +924,7 @@ async function testTurnkeyWithEgressFileAndAuth() {
       calls.push({ method: req.method ?? "", url: req.url ?? "", authorization: req.headers["authorization"] });
       if (req.method === "GET" && /\/models$/.test(req.url ?? "")) {
         res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify({ object: "list", data: [{ id: "fast" }] }));
+        res.end(JSON.stringify({ object: "list", data: [{ id: "Llama-3.2-3B-Instruct" }] }));
         return;
       }
       let body = "";
@@ -1064,13 +1064,13 @@ async function testTurnkeyWithEgressFileAndAuth() {
 
     // (1) Both DECLARED pool endpoints reachable, real round-robin — purely
     // via the egress FILE, no manual rule in the config file at all.
-    // "secllm/fast" is the turnkey-registered SIMPLE-tier model id
-    // (tier-rewiring itself is covered directly/deterministically in
+    // "secllm/Llama-3.2-3B-Instruct" is the turnkey-registered SIMPLE-tier
+    // model id (tier-rewiring itself is covered directly/deterministically in
     // secllm-intake.test.ts; explicit routing here keeps this full-server
     // test focused on egress + auth + LB).
     const results: { status: number; servedBy: string | undefined }[] = [];
     for (let i = 0; i < 4; i++) {
-      const { status, servedBy } = await send("secllm/fast");
+      const { status, servedBy } = await send("secllm/Llama-3.2-3B-Instruct");
       results.push({ status, servedBy });
     }
     ok(

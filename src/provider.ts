@@ -959,20 +959,6 @@ async function forwardToBedrock(
  * Forward a chat completion request to the appropriate backend.
  * Returns the token usage so the caller can attribute it to the principal.
  */
-/**
- * Resolve a SecLLM tag alias to its real backend model id. When a request explicitly names
- * `secllm/<tag>` (provider "secllm", model a SecLLM catalog tag like "balanced") and the operator
- * remapped that tag via SECROUTER_SECLLM_MODELS (`aliases`), return the mapped id so the literal
- * tag — which a custom pool's catalog doesn't contain — is never forwarded. No-op for any other
- * provider, an unmapped model, or when no remap is configured. Pure + exported for unit testing.
- */
-export function resolveSecllmModel(provider: string, model: string, aliases?: Record<string, string>): string {
-  if (provider === "secllm" && aliases && Object.prototype.hasOwnProperty.call(aliases, model)) {
-    return aliases[model];
-  }
-  return model;
-}
-
 export async function forwardRequest(
   chatReq: ChatRequest,
   routedModel: string,
@@ -984,12 +970,7 @@ export async function forwardRequest(
   /** Which of the provider's endpoints (config.endpointsOf) to use. Defaults to endpoint 0. */
   baseUrl?: string,
 ): Promise<UsageResult> {
-  const { provider, model: requestedModel } = parseModelId(routedModel);
-  // Resolve an explicit `secllm/<tag>` request to the real backend id when the operator remapped
-  // that tag via SECROUTER_SECLLM_MODELS — so requesting the tag by name (e.g. `secllm/balanced`,
-  // as an agentic client pins its model) yields the mapped model. A tier-routed request already
-  // carries the real id, so this is a no-op for it.
-  const model = resolveSecllmModel(provider, requestedModel, getConfig().secllmModelAliases);
+  const { provider, model } = parseModelId(routedModel);
 
   const providerConfig = getProviderConfig(provider);
   if (!providerConfig) {
