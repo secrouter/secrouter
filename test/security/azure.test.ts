@@ -101,11 +101,11 @@ async function main() {
 
   console.log("\nSecLLM provider auth (Part 3: token from SECROUTER_SECLLM_TOKEN, same generic env-auth path):");
   process.env.SECROUTER_SECLLM_TOKEN = "secllm-secret-token";
-  await forwardRequest(chat, "secllm/fast", "SIMPLE", fakeRes(), false);
+  await forwardRequest(chat, "secllm/Llama-3.2-3B-Instruct", "SIMPLE", fakeRes(), false);
   ok("SECROUTER_SECLLM_TOKEN set -> Authorization: Bearer <token> sent on forward", last().headers["Authorization"] === "Bearer secllm-secret-token", JSON.stringify(last().headers));
 
   delete process.env.SECROUTER_SECLLM_TOKEN;
-  await forwardRequest(chat, "secllm/fast", "SIMPLE", fakeRes(), false);
+  await forwardRequest(chat, "secllm/Llama-3.2-3B-Instruct", "SIMPLE", fakeRes(), false);
   ok(
     "SECROUTER_SECLLM_TOKEN unset -> no Authorization header at all (open SecLLM, back-compat)",
     !("Authorization" in last().headers),
