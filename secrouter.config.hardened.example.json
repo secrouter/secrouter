@@ -35,6 +35,36 @@
     "REASONING": { "primary": "bedrock/openai.gpt-oss-120b-1:0", "fallback": ["azure/o4-mini"] }
   },
 
+  "experiments": {
+    "_comment": "Both blocks below are OFF by default (enabled:false / omit entirely) and validated fail-loud at startup/reload — an invalid block refuses to (re)load rather than silently misrouting traffic.",
+
+    "split": {
+      "_comment": "A/B benchmarking: for a request that resolves to a tier listed here, weighted-random-pick one of several candidate models instead of always using the tier's configured primary — e.g. to compare a new model against the incumbent on real traffic before promoting it. Each assignment is echoed in the X-SecRouter-Split response header, the routing reasoning, and the secrouter_split_assigned_total metric; if the health-aware steer subsequently moves the request off the assigned variant (e.g. because that variant isn't actually live), it's counted separately in secrouter_split_steered_total so analysis can exclude the contaminated sample.",
+      "enabled": false,
+      "name": "sonnet-vs-candidate",
+      "tiers": {
+        "MEDIUM": {
+          "variants": [
+            { "model": "azure/gpt-4o", "weight": 90 },
+            { "model": "bedrock/openai.gpt-oss-120b-1:0", "weight": 10 }
+          ]
+        }
+      }
+    },
+
+    "escalation": {
+      "_comment": "Capacity-stretching escalation: draft the response on a cheap fromTiers model first, judge the draft, and escalate ONCE to toTier only if it looks weak (empty, truncated, a refusal, too short, or — in judge.mode:\"model\" — an LLM judge says so). Most requests get answered cheaply; only the ones that actually need it pay for the expensive model. Only applies to non-streaming requests (stream:true bypasses escalation entirely — the draft must be judged before anything reaches the client, which is impossible once tokens are already streaming out). judge.model is operator config, never principal-selectable, and its call still passes through the same egress deny-by-default + data-residency gate as every other upstream call.",
+      "enabled": false,
+      "fromTiers": ["SIMPLE"],
+      "toTier": "MEDIUM",
+      "judge": {
+        "mode": "heuristic",
+        "timeoutMs": 10000,
+        "minDraftChars": 1
+      }
+    }
+  },
+
   "thinking": {
     "adaptive": [],
     "enabled": { "models": [], "budget": 0 }

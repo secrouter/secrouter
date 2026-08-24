@@ -42,7 +42,7 @@ export function healthAwareModel(
   // order (primary before fallbacks) rather than jumping to an unrelated tier's model.
   for (const candidate of fallbackChain) {
     if (candidate !== routedModel && liveModels.has(candidate)) {
-      return { model: candidate, reason: `health: ${routedModel} not live → tier fallback ${candidate}` };
+      return { model: candidate, reason: `health: ${routedModel} not live -> tier fallback ${candidate}` };
     }
   }
 
@@ -50,7 +50,7 @@ export function healthAwareModel(
   // non-gated request collapses onto it — the single-live-model deployment the user asked for.
   if (liveModels.size === 1) {
     const only = liveModels.values().next().value as string;
-    return { model: only, reason: `health: sole live model → ${only}` };
+    return { model: only, reason: `health: sole live model -> ${only}` };
   }
 
   // Several models are live but none belong to this tier's chain: don't guess across tiers.

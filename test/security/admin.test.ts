@@ -115,7 +115,10 @@ async function main() {
     ok("/admin/api/evidence admin → bundle with config + auditChain + controls + usage",
       ev.status === 200 && !!evJson.config && !!evJson.auditChain && !!evJson.controls && !!evJson.health && !!evJson.usage && evJson.auditChain.ok === true);
     ok("evidence bundle is a download (Content-Disposition)", (ev.headers.get("content-disposition") || "").includes("secrouter-evidence-"));
-    ok("evidence control map covers AU-3.3.8 tamper-evidence", JSON.stringify(evJson.controls).includes("AU-3.3.8"));
+    // `?? {}`: a failed evidence fetch leaves controls undefined — JSON.stringify(undefined)
+    // returns undefined (not a string), and .includes then CRASHES the suite instead of
+    // reporting this assertion as failed.
+    ok("evidence control map covers AU-3.3.8 tamper-evidence", JSON.stringify(evJson.controls ?? {}).includes("AU-3.3.8"));
 
     // /metrics is off unless security.metrics.enabled (this config omits it)
     ok("/metrics disabled → 404", (await fetch(`${BASE}/metrics`)).status === 404);

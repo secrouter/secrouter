@@ -158,6 +158,27 @@ export const metrics = {
     ["tier"],
     [0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60],
   ),
+  splitAssignedTotal: new Counter(
+    "secrouter_split_assigned_total",
+    "Split (A/B) routing variant assignments, by tier and assigned model.",
+    ["tier", "model"],
+  ),
+  splitSteeredTotal: new Counter(
+    "secrouter_split_steered_total",
+    "Split (A/B) assignments the health-aware steer subsequently moved off of (contaminated sample marker), by tier.",
+    ["tier"],
+  ),
+  escalationsTotal: new Counter(
+    "secrouter_escalations_total",
+    "Escalation-routing outcomes, by source tier, target tier, and outcome.",
+    ["from_tier", "to_tier", "outcome"],
+  ),
+  escalationJudgeDuration: new Histogram(
+    "secrouter_escalation_judge_duration_seconds",
+    "Escalation judge call duration, by judge mode.",
+    ["mode"],
+    [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
+  ),
   up: new Gauge("secrouter_up", "1 when the router is serving.", 1),
   startTime: new Gauge("secrouter_start_time_seconds", "Process start time (unix seconds)."),
 };

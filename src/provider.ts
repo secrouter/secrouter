@@ -1009,6 +1009,107 @@ export async function forwardRequest(
 }
 
 /**
+ * Minimal `ServerResponse` shim used ONLY by `forwardBufferedRequest` below, to
+ * capture a non-streaming `forwardRequest()` call's output in memory instead of
+ * writing to a real client socket. Implements just the surface the NON-streaming
+ * branches of forwardToAnthropic/forwardToOpenAI/forwardToBedrock touch
+ * (`setHeader`/`writeHead`/`write`/`end`/`headersSent`/`writableEnded`) — the
+ * streaming branches are never reached here because every caller of this shim
+ * passes `stream=false`.
+ */
+class CapturingResponse {
+  headersSent = false;
+  writableEnded = false;
+  private _body = "";
+  setHeader(): void {
+    /* no-op — nothing reads headers off this shim */
+  }
+  writeHead(): void {
+    this.headersSent = true;
+  }
+  write(chunk: string): boolean {
+    this._body += chunk;
+    return true;
+  }
+  end(chunk?: string): void {
+    if (chunk) this._body += chunk;
+    this.writableEnded = true;
+  }
+  get body(): string {
+    return this._body;
+  }
+}
+
+export type BufferedForwardResult = {
+  /** Assistant text content (tool-call-only responses yield ""). */
+  text: string;
+  finishReason: string;
+  usage: UsageResult;
+  /** The full OpenAI-shaped chat.completion response body, for ACCEPT passthrough. */
+  responseBody: unknown;
+};
+
+/**
+ * Buffered (non-streaming, capture-to-memory) variant of `forwardRequest`, for
+ * callers that need the COMPLETE response before deciding what to do with it
+ * (the escalation draft + judge calls — see router/escalation.ts and
+ * handleChatCompletions' escalation flow in server.ts).
+ *
+ * Reuses `forwardRequest` VERBATIM — same request-building, same egress
+ * deny-by-default + data-residency gate ("No code path reaches the network
+ * without passing this" — see the comment on that gate above), same provider
+ * dispatch (Anthropic / OpenAI-compatible / Bedrock / Azure) — by handing it a
+ * capturing `ServerResponse` shim instead of the real client socket, and always
+ * forcing `stream=false`. No provider protocol code is duplicated here.
+ *
+ * The judge call also goes through this function, so the judge's request is
+ * ALSO subject to the egress gate under the request's data classification
+ * (data-residency enforced) — `judge.model` is operator config, never
+ * principal-selectable, but it still egresses through the same choke point as
+ * everything else.
+ */
+export async function forwardBufferedRequest(
+  chatReq: ChatRequest,
+  routedModel: string,
+  tier: string,
+  classification?: string,
+  traceparent?: string,
+  baseUrl?: string,
+): Promise<BufferedForwardResult> {
+  const cap = new CapturingResponse();
+  const usage = await forwardRequest(
+    chatReq,
+    routedModel,
+    tier,
+    cap as unknown as ServerResponse,
+    false, // never stream — the draft/judge call must be fully captured before use
+    classification,
+    traceparent,
+    baseUrl,
+  );
+
+  let responseBody: unknown;
+  try {
+    responseBody = JSON.parse(cap.body);
+  } catch (err) {
+    throw new Error(`forwardBufferedRequest: upstream response was not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const choice = (responseBody as { choices?: Array<{ message?: { content?: unknown }; finish_reason?: string }> })?.choices?.[0];
+  const finishReason = choice?.finish_reason ?? "stop";
+  let text = "";
+  const content = choice?.message?.content;
+  if (typeof content === "string") {
+    text = content;
+  } else if (Array.isArray(content)) {
+    text = content
+      .filter((b: any) => b?.type === "text")
+      .map((b: any) => b?.text ?? "")
+      .join("");
+  }
+  return { text, finishReason, usage, responseBody };
+}
+
+/**
  * Forward an embeddings request. Runs the same egress deny-by-default +
  * data-residency gate as chat (embedding an input still sends content out), then
  * forwards to an OpenAI-compatible upstream (Bedrock Titan/Cohere embed is a
