@@ -1122,10 +1122,15 @@ async function testTurnkeyWithEgressFileAndAuth() {
     );
 
     // (5) Part 3 CRITICAL: the active /v1/models health-check poll ALSO
-    // carries the resolved auth header — wait past healthIntervalSec (2s)
-    // for at least one poll to land, then inspect what it actually sent.
-    await new Promise((r) => setTimeout(r, 2500));
-    const pollCalls = [...callsA, ...callsB].filter((c) => c.method === "GET" && /\/models$/.test(c.url));
+    // carries the resolved auth header — wait for at least one poll to land
+    // (healthIntervalSec is 2s, but a fixed 2.5s sleep flaked under full-suite
+    // load: poll until a deadline instead), then inspect what it actually sent.
+    const pollDeadline = Date.now() + 10_000;
+    let pollCalls = [...callsA, ...callsB].filter((c) => c.method === "GET" && /\/models$/.test(c.url));
+    while (pollCalls.length === 0 && Date.now() < pollDeadline) {
+      await new Promise((r) => setTimeout(r, 250));
+      pollCalls = [...callsA, ...callsB].filter((c) => c.method === "GET" && /\/models$/.test(c.url));
+    }
     ok("provider auth: the /v1/models health-check poll ran at least once", pollCalls.length > 0, JSON.stringify([...callsA, ...callsB]));
     ok(
       "provider auth: the /v1/models poll ALSO carried Authorization: Bearer <SECROUTER_SECLLM_TOKEN> (not just the forward)",

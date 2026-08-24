@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import { logger } from "./logger.js";
 import type { SecurityConfig, EgressRule } from "./security/types.js";
 import { allowedHostsOf } from "./security/egress/allowlist.js";
+import type { ExperimentsConfig } from "./router/types.js";
 
 // ─── Config Types ───
 
@@ -98,6 +99,13 @@ export type FreeRouterConfig = {
   /** Governed embeddings: default model for POST /v1/embeddings when the client sends "auto"/none. */
   embeddings?: { default?: string };
   agenticTiers?: Record<string, TierMapping>;
+  /**
+   * Routing experiments: split (A/B) routing and escalation (draft-judge-escalate)
+   * routing. See router/types.ts ExperimentsConfig, router/split.ts, router/escalation.ts.
+   * Validated fail-loud by router/config.ts's validateExperimentsConfig (server.ts calls
+   * it at startup/reload alongside validateSecurityConfig).
+   */
+  experiments?: ExperimentsConfig;
   tierBoundaries?: {
     simpleMedium: number;
     mediumComplex: number;

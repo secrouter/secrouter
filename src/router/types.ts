@@ -74,6 +74,57 @@ export type OverridesConfig = {
   agenticMode?: boolean;
 };
 
+// ─── Experiments: split routing (A/B) + escalation routing ───
+
+/** One weighted candidate model within a tier's split. */
+export type SplitVariant = {
+  model: string; // "provider/model" form
+  weight: number; // > 0; relative weight (need not sum to 1 or 100)
+};
+
+export type SplitTierConfig = {
+  variants: SplitVariant[]; // >= 2
+};
+
+/**
+ * Split (A/B) routing: for a given tier, weighted-random-pick one of several
+ * candidate models instead of always using the tier's configured primary.
+ * Used to benchmark models against real traffic. See router/split.ts.
+ */
+export type SplitConfig = {
+  enabled: boolean;
+  name: string; // experiment name, echoed in headers/audit/reasoning
+  tiers: Partial<Record<Tier, SplitTierConfig>>;
+};
+
+export type EscalationJudgeConfig = {
+  mode: "heuristic" | "model";
+  /** Required when mode === "model". "provider/model" form. */
+  model?: string;
+  /** Judge call timeout, ms. Default 10_000. */
+  timeoutMs?: number;
+  /** Minimum acceptable draft length (chars); shorter drafts escalate. Default 1. */
+  minDraftChars?: number;
+  /** Regex source strings tested against the draft text; a match escalates. */
+  refusalPatterns?: string[];
+};
+
+/**
+ * Escalation routing: draft a cheap-tier response, judge it, and escalate once
+ * to a stronger tier if the draft looks weak. See router/escalation.ts.
+ */
+export type EscalationConfig = {
+  enabled: boolean;
+  fromTiers: Tier[]; // tiers eligible to be drafted-then-judged
+  toTier: Tier; // escalation target; must not be one of fromTiers
+  judge: EscalationJudgeConfig;
+};
+
+export type ExperimentsConfig = {
+  split?: SplitConfig;
+  escalation?: EscalationConfig;
+};
+
 export type RoutingConfig = {
   version: string;
   classifier: ClassifierConfig;
@@ -81,4 +132,5 @@ export type RoutingConfig = {
   tiers: Record<Tier, TierConfig>;
   agenticTiers?: Record<Tier, TierConfig>;
   overrides: OverridesConfig;
+  experiments?: ExperimentsConfig;
 };

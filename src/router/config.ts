@@ -12,8 +12,10 @@
  *   - google: gemini-2.5-pro, gemini-2.5-flash (add as needed)
  */
 
-import type { RoutingConfig } from "./types.js";
+import type { ExperimentsConfig, RoutingConfig } from "./types.js";
 import { getConfig } from "../config.js";
+import { validateSplitConfig } from "./split.js";
+import { validateEscalationConfig } from "./escalation.js";
 
 export const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
   version: "2.0-direct",
@@ -238,5 +240,28 @@ export function getRoutingConfig(): RoutingConfig {
     };
   }
 
+  // Override experiments (split A/B + escalation routing). Whole-block override
+  // (same pattern as tiers/agenticTiers above) — an operator who sets
+  // `experiments` in secrouter.config.json owns the whole block.
+  if (extCfg.experiments) {
+    config.experiments = extCfg.experiments as RoutingConfig["experiments"];
+  }
+
   return config;
+}
+
+/**
+ * Validate the experiments block (split + escalation). Returns human-readable
+ * errors; empty = valid. FAIL LOUD: called at config load/reload time
+ * (server.ts, alongside validateSecurityConfig) — an invalid experiments
+ * config must refuse to (re)load rather than silently misroute traffic or
+ * silently disable the A/B sample. See router/split.ts and
+ * router/escalation.ts for the per-feature rules.
+ */
+export function validateExperimentsConfig(experiments: ExperimentsConfig | undefined): string[] {
+  if (!experiments) return [];
+  return [
+    ...validateSplitConfig(experiments.split),
+    ...validateEscalationConfig(experiments.escalation),
+  ];
 }

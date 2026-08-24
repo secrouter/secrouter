@@ -15,11 +15,23 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { route, getFallbackChain, type Tier } from "./router/index.js";
-import { getRoutingConfig } from "./router/config.js";
+import { getRoutingConfig, validateExperimentsConfig } from "./router/config.js";
 import { selectEndpoints, type CursorState } from "./router/balance.js";
 import { healthAwareModel, isLoopbackUrl, computeLiveModels, autoProbeProvider } from "./router/health.js";
+import { applySplit } from "./router/split.js";
+import {
+  escalationApplies,
+  resolveJudgeConfig,
+  heuristicVerdict,
+  buildJudgeInput,
+  parseJudgeVerdict,
+  JUDGE_SYSTEM_PROMPT,
+  type Verdict,
+  type ResolvedJudgeConfig,
+} from "./router/escalation.js";
+import type { EscalationConfig } from "./router/types.js";
 import { buildPricingMap, getModelCatalog } from "./models.js";
-import { forwardRequest, forwardEmbeddingsRequest, TimeoutError, type ChatRequest } from "./provider.js";
+import { forwardRequest, forwardBufferedRequest, forwardEmbeddingsRequest, TimeoutError, type ChatRequest } from "./provider.js";
 import {
   CircuitBreaker,
   isHealthFailure,
@@ -313,6 +325,15 @@ const _secErrors = validateSecurityConfig(appConfig);
 if (_secErrors.length > 0) {
   logger.error("FATAL: invalid security configuration — refusing to start:");
   for (const e of _secErrors) logger.error(`  - ${e}`);
+  process.exit(1);
+}
+// Routing experiments (split A/B + escalation) — fail loud exactly like the
+// security config check above: a broken experiments block must refuse to
+// start rather than silently misroute or silently drop the A/B sample.
+const _expErrors = validateExperimentsConfig(appConfig.experiments);
+if (_expErrors.length > 0) {
+  logger.error("FATAL: invalid routing experiments configuration — refusing to start:");
+  for (const e of _expErrors) logger.error(`  - ${e}`);
   process.exit(1);
 }
 try {
@@ -739,6 +760,24 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
     logger.info(`[${stats.requests + 1}] Passthrough: model=${routedModel}`);
   }
 
+  // ── Experiments: split routing (A/B) ────────────────────────────────────────
+  // Weighted-random-pick a variant model for this tier, if a split experiment is
+  // configured for it. Runs BEFORE the health-aware steer and policy authorize()
+  // below — both still run afterward and may override the assignment (policy
+  // always wins; a health-steer-away is tracked as split_steered_total rather
+  // than silently counted as a clean sample — see the steer block below).
+  let splitAssignment: { name: string; model: string } | null = null;
+  if (tier !== "EXPLICIT") {
+    splitAssignment = applySplit(getRoutingConfig().experiments, tier);
+    if (splitAssignment) {
+      routedModel = splitAssignment.model;
+      reasoning = `${reasoning} | split:${splitAssignment.name}=${splitAssignment.model}`;
+      res.setHeader("X-SecRouter-Split", `${splitAssignment.name}=${splitAssignment.model}`);
+      metrics.splitAssignedTotal.inc({ tier, model: splitAssignment.model });
+      logger.info(`[${stats.requests + 1}] Split: ${splitAssignment.name}=${splitAssignment.model}`);
+    }
+  }
+
   // ── Health-aware collapse ──────────────────────────────────────────────────
   // The classifier picks a model per tier, but that model may not be loaded on any backend (a
   // single-GPU SecLLM commonly serves ONE model at a time). When SecRouter knows what's actually
@@ -754,6 +793,12 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
     const steer = healthAwareModel(routedModel, chain, liveModels());
     if (steer) {
       logger.info(`[${stats.requests + 1}] Health-aware: ${routedModel} -> ${steer.model} | ${steer.reason}`);
+      if (splitAssignment && steer.model !== routedModel) {
+        // The steer moved us off the split-assigned variant — a contaminated
+        // sample: mark it so A/B analysis can exclude/flag it rather than
+        // silently attributing the steered-to model's outcome to the variant.
+        metrics.splitSteeredTotal.inc({ tier });
+      }
       routedModel = steer.model;
       reasoning = `${reasoning} | ${steer.reason}`;
     }
@@ -853,6 +898,78 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
     }
   }
 
+  // ── Experiments: escalation routing ──────────────────────────────────────────
+  // Draft on the (cheap) resolved tier, judge the draft, and escalate ONCE to a
+  // stronger tier if it looks weak. Only for non-streaming requests — the draft
+  // must be judged before anything reaches the client, which is impossible once
+  // tokens are already streaming out. See router/escalation.ts.
+  const escalationCfg = getRoutingConfig().experiments?.escalation;
+  if (escalationApplies(escalationCfg, tier, stream)) {
+    await runEscalationFlow(chatReq, modelsToTry, tier, escalationCfg!, res, requestClassification, ctx, t0);
+    return;
+  }
+
+  await runForward(chatReq, modelsToTry, tier, res, stream, requestClassification, ctx, t0);
+}
+
+/**
+ * Send the terminal "nothing forwarded successfully" response — shared by
+ * `runForward` (the normal streaming-to-client path) and the escalation flow's
+ * DRAFT loop (`runBufferedForward`), so both report failure identically.
+ */
+function sendModelLoopFailure(
+  res: ServerResponse,
+  tier: string,
+  t0: number,
+  egressBlocked: boolean,
+  circuitOnly: boolean,
+  lastError: string,
+): void {
+  stats.errors++;
+  metrics.requestDuration.observe({ tier }, (Date.now() - t0) / 1000);
+  const failOutcome = egressBlocked ? "egress_denied" : circuitOnly ? "circuit_open" : "error";
+  metrics.requestsTotal.inc({ tier, provider: "", model: "", outcome: failOutcome });
+  if (!res.headersSent) {
+    if (egressBlocked) {
+      sendError(res, 502, "No authorized model is available for this request's data classification", "egress_denied");
+    } else if (circuitOnly) {
+      res.setHeader("Retry-After", String(breaker.config().cooldownSec));
+      sendError(res, 503, "All authorized providers are currently unavailable (circuit open)", "provider_unavailable");
+    } else {
+      sendError(res, 502, `Backend error: ${lastError}`, "upstream_error");
+    }
+  } else if (!res.writableEnded) {
+    res.write(`data: ${JSON.stringify({ error: { message: lastError } })}\n\n`);
+    res.write("data: [DONE]\n\n");
+    res.end();
+  }
+}
+
+/**
+ * Try each model in `modelsToTry` (primary + tier fallbacks) against the
+ * circuit-breaker-gated endpoint set, forwarding via `forwardRequest` — i.e.
+ * streaming/writing the response DIRECTLY to `res`. This is the normal request
+ * path's model loop (unchanged behavior from before the split/escalation
+ * features), extracted into a function so escalation's ESCALATE step (below)
+ * can reuse the exact same breaker/endpoint machinery for the final call
+ * against `toTier`'s chain, instead of a second copy of this loop.
+ *
+ * On success: already wrote/streamed the response, already called
+ * `recordUsageAndAudit(outcomeLabel)` + observed request duration. On total
+ * failure: already sent the terminal error response via `sendModelLoopFailure`.
+ */
+async function runForward(
+  chatReq: ChatRequest,
+  modelsToTry: string[],
+  tier: string,
+  res: ServerResponse,
+  stream: boolean,
+  requestClassification: string | undefined,
+  ctx: Ctx,
+  t0: number,
+  outcomeLabel = "ok",
+): Promise<void> {
+  const primaryModel = modelsToTry[0];
   let lastError: string = "";
   let egressBlocked = false;
   let attempted = false; // did we actually forward to any provider?
@@ -903,7 +1020,7 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
       const baseUrl = providerEntry ? endpointsOf(providerEntry)[endpointIdx] : undefined;
       const started = Date.now();
       try {
-        if (modelToTry !== routedModel) {
+        if (modelToTry !== primaryModel) {
           logger.info(`[${stats.requests}] Falling back to ${modelToTry}`);
           res.setHeader("X-SecRouter-Model", modelToTry);
         }
@@ -911,7 +1028,7 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
         const usage = await forwardRequest(chatReq, modelToTry, tier, res, stream, requestClassification, ctx.traceparent, baseUrl);
         const tr = breaker.recordSuccess(provider, Date.now() - started, endpointIdx);
         if (tr) onCircuitTransition(tr); // half-open -> closed (recovery)
-        recordUsageAndAudit(ctx, tier, usage, "ok"); // per-user token/cost accounting
+        recordUsageAndAudit(ctx, tier, usage, outcomeLabel); // per-user token/cost accounting
         metrics.requestDuration.observe({ tier }, (Date.now() - t0) / 1000);
         return; // success
       } catch (err) {
@@ -948,26 +1065,274 @@ async function handleChatCompletions(req: IncomingMessage, res: ServerResponse, 
     }
   }
 
-  stats.errors++;
-  metrics.requestDuration.observe({ tier }, (Date.now() - t0) / 1000);
   // All authorized providers open (nothing forwarded) is a distinct, fast outcome.
   const circuitOnly = !attempted && skippedOpen;
-  const failOutcome = egressBlocked ? "egress_denied" : circuitOnly ? "circuit_open" : "error";
-  metrics.requestsTotal.inc({ tier, provider: "", model: "", outcome: failOutcome });
-  if (!res.headersSent) {
-    if (egressBlocked) {
-      sendError(res, 502, "No authorized model is available for this request's data classification", "egress_denied");
-    } else if (circuitOnly) {
-      res.setHeader("Retry-After", String(breaker.config().cooldownSec));
-      sendError(res, 503, "All authorized providers are currently unavailable (circuit open)", "provider_unavailable");
-    } else {
-      sendError(res, 502, `Backend error: ${lastError}`, "upstream_error");
+  sendModelLoopFailure(res, tier, t0, egressBlocked, circuitOnly, lastError);
+}
+
+type BufferedLoopOutcome =
+  | { success: true; result: import("./provider.js").BufferedForwardResult; modelUsed: string }
+  | { success: false; lastError: string; egressBlocked: boolean; circuitOnly: boolean };
+
+/**
+ * Same breaker/endpoint machinery as `runForward` above (selectEndpoints,
+ * breaker.admit, recordSuccess/recordFailure — identical semantics), but calls
+ * the BUFFERED `forwardBufferedRequest` instead of the streaming-to-`res`
+ * `forwardRequest`. Used for the escalation flow's DRAFT call: the draft must
+ * be captured in memory and judged before anything reaches the client, so it
+ * never touches `res` and never sends an error response itself (the caller
+ * decides what a total draft failure means — see `runEscalationFlow`).
+ */
+async function runBufferedForward(
+  chatReq: ChatRequest,
+  modelsToTry: string[],
+  tier: string,
+  requestClassification: string | undefined,
+  ctx: Ctx,
+): Promise<BufferedLoopOutcome> {
+  let lastError: string = "";
+  let egressBlocked = false;
+  let attempted = false;
+  let skippedOpen = false;
+  modelLoop:
+  for (const modelToTry of modelsToTry) {
+    const provider = modelToTry.split("/")[0];
+    const providerEntry = getConfig().providers[provider];
+    let endpointCount = 1;
+    try {
+      endpointCount = providerEntry ? endpointsOf(providerEntry).length : 1;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      logger.error(`Endpoint config error for provider '${provider}': ${lastError}`);
+      continue;
     }
-  } else if (!res.writableEnded) {
-    res.write(`data: ${JSON.stringify({ error: { message: lastError } })}\n\n`);
-    res.write("data: [DONE]\n\n");
-    res.end();
+
+    const bareModel = modelToTry.slice(provider.length + 1);
+    const order = selectEndpoints(provider, endpointCount, breaker, endpointCursor, {
+      onTransition: onCircuitTransition,
+      serves: (idx) => servedModels.get(`${provider}#${idx}`)?.has(bareModel) ?? true,
+    });
+    if (order.length === 0) {
+      skippedOpen = true;
+      lastError = `circuit open for provider '${provider}'`;
+      logger.warn(`circuit open: skip draft ${modelToTry} — failing fast to next authorized model`);
+      continue;
+    }
+
+    for (const endpointIdx of order) {
+      const gate = breaker.admit(provider, endpointIdx);
+      if (gate.transition) onCircuitTransition(gate.transition);
+      if (!gate.ok) continue;
+
+      const baseUrl = providerEntry ? endpointsOf(providerEntry)[endpointIdx] : undefined;
+      const started = Date.now();
+      try {
+        attempted = true;
+        const result = await forwardBufferedRequest(chatReq, modelToTry, tier, requestClassification, ctx.traceparent, baseUrl);
+        const tr = breaker.recordSuccess(provider, Date.now() - started, endpointIdx);
+        if (tr) onCircuitTransition(tr);
+        return { success: true, result, modelUsed: modelToTry };
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+        if (err instanceof EgressDeniedError) {
+          metrics.egressDeniedTotal.inc();
+          egressBlocked = true;
+          if (ctx.principal && securityEnabled()) {
+            getAuditor().emit(audit.egressDeny(ctx.principal.id, ctx.requestId, err.provider, err.message));
+          }
+          logger.error(`EGRESS DENIED (draft ${modelToTry}#${endpointIdx}): ${lastError}`);
+          continue modelLoop;
+        }
+        metrics.upstreamErrorsTotal.inc({ provider, endpoint: String(endpointIdx) });
+        if (isHealthFailure(err)) {
+          const tr = breaker.recordFailure(provider, endpointIdx);
+          if (tr) onCircuitTransition(tr);
+        }
+        if (err instanceof TimeoutError) stats.timeouts++;
+        logger.error(`Draft forward error (${modelToTry}#${endpointIdx}): ${lastError}`);
+        // Buffered loop never writes to a client res — always keep trying the next endpoint/model.
+      }
+    }
   }
+  const circuitOnly = !attempted && skippedOpen;
+  return { success: false, lastError, egressBlocked, circuitOnly };
+}
+
+/** Emit the free-form route.escalation audit event, guarded exactly like route.decision. */
+function auditEscalation(
+  ctx: Ctx,
+  outcome: string,
+  model: string,
+  tier: string,
+  detail: Record<string, unknown>,
+): void {
+  if (ctx.principal && securityEnabled()) {
+    getAuditor().emit({
+      type: "route.escalation",
+      requestId: ctx.requestId,
+      principalId: ctx.principal.id,
+      sourceIp: ctx.sourceIp,
+      model,
+      tier,
+      outcome,
+      detail,
+    });
+  }
+}
+
+/**
+ * Model-mode judge: a buffered call to `judge.model` with a fixed rubric
+ * (system prompt fixed in router/escalation.ts — not principal-selectable;
+ * judge.model is operator config). The call goes through
+ * `forwardBufferedRequest`, so it is subject to the SAME egress deny-by-default
+ * + data-residency gate as every other upstream call, under this request's
+ * data classification.
+ *
+ * Fail-open by design: judge timeout, upstream error, or unparseable output all
+ * ACCEPT the draft (serve the cheaper answer) rather than blocking the
+ * response or escalating on a judge malfunction — and are counted with a
+ * distinct reason so it's visible in audit/metrics.
+ */
+async function runModelJudge(
+  chatReq: ChatRequest,
+  draftText: string,
+  judge: ResolvedJudgeConfig,
+  requestClassification: string | undefined,
+  ctx: Ctx,
+): Promise<Verdict> {
+  if (!judge.model) return { escalate: false, reason: "accept" }; // validated at config time; defensive fail-open
+  const { prompt } = extractPromptForClassification(chatReq.messages);
+  const judgeInput = buildJudgeInput(prompt ?? "", draftText);
+  const judgeReq: ChatRequest = {
+    model: judge.model,
+    messages: [
+      { role: "system", content: JUDGE_SYSTEM_PROMPT },
+      { role: "user", content: judgeInput },
+    ],
+    temperature: 0,
+    max_tokens: 60,
+  };
+
+  const callPromise = forwardBufferedRequest(judgeReq, judge.model, "EXPLICIT", requestClassification, ctx.traceparent)
+    .then((r) => ({ ok: true as const, text: r.text }))
+    .catch((err) => ({ ok: false as const, err }));
+  const timeoutPromise = new Promise<{ ok: false; timedOut: true }>((resolve) =>
+    setTimeout(() => resolve({ ok: false, timedOut: true }), judge.timeoutMs),
+  );
+  const raced = await Promise.race([callPromise, timeoutPromise]);
+
+  if (!raced.ok) {
+    if ("timedOut" in raced) {
+      logger.warn(`[${ctx.requestId}] escalation judge timed out after ${judge.timeoutMs}ms — failing open (accept draft)`);
+      return { escalate: false, reason: "judge_timeout" };
+    }
+    logger.error(
+      `[${ctx.requestId}] escalation judge call failed: ${raced.err instanceof Error ? raced.err.message : String(raced.err)} — failing open (accept draft)`,
+    );
+    return { escalate: false, reason: "judge_error" };
+  }
+  const parsed = parseJudgeVerdict(raced.text);
+  if (!parsed) {
+    logger.warn(`[${ctx.requestId}] escalation judge returned unparseable output — failing open (accept draft)`);
+    return { escalate: false, reason: "judge_unparseable" };
+  }
+  return parsed;
+}
+
+/**
+ * Escalation routing orchestration: DRAFT (buffered, breaker-integrated) ->
+ * JUDGE (heuristic or model) -> ACCEPT (serialize the draft) or ESCALATE
+ * (re-authorize toTier's primary, then forward the ORIGINAL request through
+ * the normal `runForward` streaming-to-client machinery against toTier's
+ * chain). Runs at most once per request — handleChatCompletions calls this
+ * function exactly once and it never recurses into itself, so "exactly one
+ * escalation per request" holds structurally.
+ */
+async function runEscalationFlow(
+  chatReq: ChatRequest,
+  draftModelsToTry: string[],
+  fromTier: string,
+  escCfg: EscalationConfig,
+  res: ServerResponse,
+  requestClassification: string | undefined,
+  ctx: Ctx,
+  t0: number,
+): Promise<void> {
+  const judge = resolveJudgeConfig(escCfg.judge);
+
+  // 1. DRAFT
+  const draftOutcome = await runBufferedForward(chatReq, draftModelsToTry, fromTier, requestClassification, ctx);
+  if (!draftOutcome.success) {
+    sendModelLoopFailure(res, fromTier, t0, draftOutcome.egressBlocked, draftOutcome.circuitOnly, draftOutcome.lastError);
+    return;
+  }
+  const draft = draftOutcome.result;
+  const draftModel = draftOutcome.modelUsed;
+
+  // 2. JUDGE
+  const judgeStarted = Date.now();
+  const verdict: Verdict =
+    judge.mode === "heuristic"
+      ? heuristicVerdict(draft.text, draft.finishReason, judge)
+      : await runModelJudge(chatReq, draft.text, judge, requestClassification, ctx);
+  metrics.escalationJudgeDuration.observe({ mode: judge.mode }, (Date.now() - judgeStarted) / 1000);
+
+  if (!verdict.escalate) {
+    // 3. ACCEPT — serialize the buffered draft as a normal chat-completions response.
+    metrics.escalationsTotal.inc({ from_tier: fromTier, to_tier: escCfg.toTier, outcome: "accepted" });
+    auditEscalation(ctx, "accepted", draftModel, fromTier, { from: fromTier, to: fromTier, judgeMode: judge.mode, reason: verdict.reason });
+    res.setHeader("X-SecRouter-Escalation", "accepted");
+    res.setHeader("X-SecRouter-Model", draftModel); // the draft chain may have fallen back
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(draft.responseBody));
+    recordUsageAndAudit(ctx, fromTier, draft.usage, "ok");
+    metrics.requestDuration.observe({ tier: fromTier }, (Date.now() - t0) / 1000);
+    return;
+  }
+
+  // Draft usage is ALWAYS accounted, even though we're about to escalate —
+  // the draft call really happened and really cost tokens.
+  recordUsageAndAudit(ctx, fromTier, draft.usage, "draft");
+
+  // 4. ESCALATE — re-run policy authorize() for toTier's primary under the same
+  // principal. Denied (or no model configured for toTier at all) -> serve the
+  // draft instead of hard-failing the request.
+  const routingCfg = getRoutingConfig();
+  const toTierConfig = routingCfg.tiers[escCfg.toTier as keyof typeof routingCfg.tiers];
+  const toTierPrimary = toTierConfig?.primary;
+  const serveDraftInstead = (reason: string) => {
+    metrics.escalationsTotal.inc({ from_tier: fromTier, to_tier: escCfg.toTier, outcome: "escalation_denied" });
+    auditEscalation(ctx, "escalation_denied", draftModel, fromTier, { from: fromTier, to: escCfg.toTier, judgeMode: judge.mode, reason });
+    res.setHeader("X-SecRouter-Escalation", "escalation_denied");
+    res.setHeader("X-SecRouter-Model", draftModel); // the draft chain may have fallen back
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(draft.responseBody));
+    metrics.requestDuration.observe({ tier: fromTier }, (Date.now() - t0) / 1000);
+  };
+
+  if (!toTierPrimary) {
+    serveDraftInstead("no_model_for_toTier");
+    return;
+  }
+  if (ctx.principal && securityEnabled()) {
+    const policy = getEffectivePolicy(ctx.principal);
+    const decision = authorize(policy, toTierPrimary, escCfg.toTier, routingCfg);
+    if (decision.effect === "deny") {
+      serveDraftInstead(decision.reason);
+      return;
+    }
+  }
+
+  const toModelsToTry: string[] = [toTierPrimary, ...(toTierConfig?.fallback ?? [])];
+  res.setHeader("X-SecRouter-Escalation", "escalated");
+  res.setHeader("X-SecRouter-Model", toModelsToTry[0]);
+  res.setHeader("X-SecRouter-Tier", escCfg.toTier);
+  metrics.escalationsTotal.inc({ from_tier: fromTier, to_tier: escCfg.toTier, outcome: "escalated" });
+  auditEscalation(ctx, "escalated", toModelsToTry[0], escCfg.toTier, { from: fromTier, to: escCfg.toTier, judgeMode: judge.mode, reason: verdict.reason });
+
+  // Non-streaming (escalation never applies to streaming requests) — forward
+  // the ORIGINAL request through the normal streaming-to-client machinery.
+  await runForward(chatReq, toModelsToTry, escCfg.toTier, res, false, requestClassification, ctx, t0, "ok");
 }
 
 /**
@@ -1065,6 +1430,10 @@ function handleReloadConfig(_req: IncomingMessage, res: ServerResponse) {
   const errors = validateSecurityConfig(newCfg);
   if (errors.length > 0) {
     return sendError(res, 422, `Refusing reload — invalid security config: ${errors.join("; ")}`, "config_error");
+  }
+  const expErrors = validateExperimentsConfig(newCfg.experiments);
+  if (expErrors.length > 0) {
+    return sendError(res, 422, `Refusing reload — invalid experiments config: ${expErrors.join("; ")}`, "config_error");
   }
   reloadAuth();
   initSecurity(newCfg.security);
