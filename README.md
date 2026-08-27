@@ -101,7 +101,7 @@ Start from the hardened reference config and the hardening guide:
 - [Deployment hardening guide](docs/compliance/deployment-hardening.md) · [CMMC control matrix](docs/compliance/cmmc-control-matrix.md).
 - [`docs/configuration.md`](docs/configuration.md) — full config field reference · [`docs/usage.md`](docs/usage.md) — API, admin console, audit trail, routing experiments · [`docs/index.md`](docs/index.md) — doc index.
 
-Deploying more than SecRouter alone (SSO, local inference, a governed chat UI)? SecRouter is one component of the **SecDeploy** suite; see [secdeploy](https://github.com/secrouter/secdeploy) for the one-command, air-gap-friendly deployer that stands up a pinned, compatible set of them together.
+Deploying more than SecRouter alone (SSO, local inference, a governed chat UI)? SecRouter is one component of the **SecDeploy** suite; see [secdeploy](https://github.com/secrouter/secdeploy#the-suite) for the one-command, air-gap-friendly deployer that stands up a pinned, compatible set of them together.
 
 ```bash
 npm run test:security      # OIDC, policy/quota, egress, SigV4, metrics, resilience, Azure, MCP
