@@ -128,7 +128,8 @@ export const ADMIN_HTML = `<!doctype html>
 
   // ── Theme (light / dark, follows OS by default, choice persisted) ──
   function effectiveTheme(){ var a=document.documentElement.getAttribute("data-theme"); if(a==="dark"||a==="light") return a; return (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "light"; }
-  function setTheme(t){ document.documentElement.setAttribute("data-theme", t); try { localStorage.setItem("secrouter-theme", t); } catch(e){} var b=document.querySelector(".theme-toggle"); if(b) b.textContent = effectiveTheme()==="dark" ? "LIGHT" : "DARK"; }
+  // The ◐ glyph is theme-neutral (secrecorder's toggle pattern) — no label swap needed.
+  function setTheme(t){ document.documentElement.setAttribute("data-theme", t); try { localStorage.setItem("secrouter-theme", t); } catch(e){} }
   function toggleTheme(){ setTheme(effectiveTheme()==="dark" ? "light" : "dark"); }
 
   function el(tag, attrs, kids){
@@ -210,7 +211,7 @@ export const ADMIN_HTML = `<!doctype html>
     var head = el("header", {}, [
       el("span",{class:"lock",text:"🔒"}), el("h1",{text:"SecRouter Admin"}),
       el("span",{class:"who",text: state.token? "authenticated":"dev mode (open)"}),
-      el("button",{class:"btn ghost theme-toggle",title:"Toggle light / dark",text:(effectiveTheme()==="dark"?"LIGHT":"DARK"),onclick:toggleTheme})
+      el("button",{class:"btn ghost theme-toggle",title:"Toggle light / dark",text:"◐",onclick:toggleTheme})
     ]);
     var nav = el("nav");
     [["monitor","Monitor"],["policies","Policies"],["models","Models"],["audit","Access Log"]].forEach(function(t){
