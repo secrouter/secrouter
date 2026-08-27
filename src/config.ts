@@ -884,6 +884,14 @@ export function validateSecurityConfig(cfg: FreeRouterConfig = getConfig()): str
     }
   }
 
+  // Audit retention (AU 3.3.1) — 0/absent = keep forever (unchanged default behavior).
+  if (sec.audit?.retentionDays !== undefined) {
+    const rd = sec.audit.retentionDays;
+    if (!Number.isInteger(rd) || rd < 0) {
+      errors.push("security.audit.retentionDays must be a non-negative integer (days; 0 = keep forever)");
+    }
+  }
+
   // Resilience / circuit breaker (all optional; bounds guard against misconfig).
   if (sec.resilience) {
     const r = sec.resilience;

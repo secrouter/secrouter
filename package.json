@@ -9,7 +9,7 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "npm run test:security && npm run test:integration",
-    "test:security": "for f in sigv4 oidc policy audit-query egress endpoints metrics resilience balance health secllm-intake openai-forward azure mcp-protocol mcp-policy mcp-gateway split escalation; do npx tsx test/security/$f.test.ts || exit 1; done",
+    "test:security": "for f in sigv4 oidc policy audit-query audit-retention egress endpoints metrics resilience balance health secllm-intake openai-forward azure mcp-protocol mcp-policy mcp-gateway split escalation; do npx tsx test/security/$f.test.ts || exit 1; done",
     "test:integration": "for f in e2e admin endpoint-mgmt; do npx tsx test/security/$f.test.ts || exit 1; done"
   },
   "engines": {

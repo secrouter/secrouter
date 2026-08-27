@@ -13,6 +13,42 @@ Ordering within each tier is by expected value to the target buyer.
 
 ## Shipped
 
+### Split (A/B) + escalation routing experiments
+Two off-by-default, fail-loud-validated routing features for benchmarking and capacity-stretching
+on real traffic: weighted-random A/B assignment per tier, and draft-cheap/judge/escalate-once.
+- **Shipped as**: `router/split.ts` (`applySplit`, `pickWeightedVariant`, `validateSplitConfig`) +
+  `router/escalation.ts` (`heuristicVerdict`/`parseJudgeVerdict`, `validateEscalationConfig`) +
+  `experiments.split`/`experiments.escalation` in config, validated by
+  `router/config.ts`'s `validateExperimentsConfig` alongside `validateSecurityConfig`. Orchestration
+  (`runEscalationFlow`, the split-then-health-steer-then-authorize ordering) lives in `server.ts`.
+  Assignments/outcomes are echoed in `X-SecRouter-Split`/`X-SecRouter-Escalation` response headers,
+  the routing reasoning, the audit trail, and the `secrouter_split_assigned_total`/
+  `secrouter_split_steered_total`/`secrouter_escalations_total`/
+  `secrouter_escalation_judge_duration_seconds` metrics.
+- **Docs**: README "Routing experiments"; `docs/usage.md#routing-experiments` (workflow) and
+  `docs/configuration.md#routing-experiments` (field reference); tests in
+  `test/security/split.test.ts`, `test/security/escalation.test.ts`.
+
+### Audit retention (AU 3.3.1)
+Configurable, tamper-evidence-preserving pruning of the hash-chained audit log.
+- **Shipped as**: `security.audit.retentionDays` (default `0` = keep forever) + a daily background
+  job (`security/audit/retention.ts`'s `runAuditPrune`, wired up by `server.ts`'s `startAuditPrune`).
+  Every prune cycle records a self-attesting `audit.pruned` event through the normal auditor before
+  deleting anything, so `verifyAuditChain` still holds; a failed custody-trail write skips that
+  cycle's deletion rather than losing the trail.
+- **Docs**: `docs/configuration.md#audit`; `docs/usage.md#audit-retention`; surfaced in the
+  evidence bundle's `AU-3.3.1` control self-assessment. Tests in
+  `test/security/audit-retention.test.ts`.
+
+### Admin console: endpoint management + model-driven tiers + Access Log tab
+Manage local/on-prem model endpoints and routing from the web UI instead of hand-editing the config;
+the audit trail gets its own searchable/filterable/sortable tab instead of a short tail under Monitor.
+- **Shipped as**: `GET /admin/api/models/available` (live probe) + the endpoint wizard
+  (`POST /admin/api/endpoint/probe|preview|apply|remove|egress`, atomic validated writes, audited) +
+  the Models tab's model-driven tier assignment; the Access Log tab backed by
+  `GET /admin/api/audit`'s filter/sort/paging.
+- **Docs**: `docs/usage.md#admin-console-admin`.
+
 ### Per-provider load balancing (formerly Tier 2 #3)
 Multiple base URLs per provider (`baseUrl: string[]`), round-robin across
 on-prem/self-hosted replicas with breaker-aware, model-aware selection.

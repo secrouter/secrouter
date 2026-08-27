@@ -299,7 +299,37 @@ export class SqliteStore implements Store {
       hash: string;
     }>;
 
-    let prev = GENESIS;
+    if (rows.length === 0) return { ok: true, checked: 0 };
+
+    const first = rows[0];
+    let prev: string;
+    if (first.id === 1) {
+      // Nothing was ever pruned — the classic genesis check.
+      prev = GENESIS;
+    } else {
+      // Rows before `first` are gone (retention prune — see auditPruneCandidates /
+      // deleteAuditThrough). We trust `first.prev_hash` as the new chain anchor ONLY
+      // if a surviving `audit.pruned` event self-attests it: it must name the exact
+      // row id that used to precede `first` (throughId) and record that row's hash
+      // (anchorHash) — which is exactly `first.prev_hash`. That attesting event is
+      // itself just another row in `rows` below, so ITS prevHash/hash are checked for
+      // tamper in the same walk as everything else; nothing here is exempt from
+      // verification, only the requirement that the very first surviving row must
+      // chain back to GENESIS is relaxed, and only when a matching prune event backs
+      // it up. No matching event ⇒ an untrusted gap ⇒ reported as broken.
+      const anchorEvent = rows.find((r) => {
+        if (r.type !== "audit.pruned") return false;
+        try {
+          const detail = JSON.parse(r.detail) as { throughId?: unknown; anchorHash?: unknown };
+          return detail.throughId === first.id - 1 && detail.anchorHash === first.prev_hash;
+        } catch {
+          return false;
+        }
+      });
+      if (!anchorEvent) return { ok: false, brokenAtId: first.id, checked: 0 };
+      prev = first.prev_hash;
+    }
+
     let checked = 0;
     for (const row of rows) {
       if (row.prev_hash !== prev) return { ok: false, brokenAtId: row.id, checked };
@@ -322,6 +352,40 @@ export class SqliteStore implements Store {
       checked++;
     }
     return { ok: true, checked };
+  }
+
+  // ─── Audit retention (AU 3.3.1) ───
+  //
+  // Deleting old rows naively would break verifyAuditChain: the oldest surviving
+  // row's prev_hash would point at a hash that no longer exists. The fix is a
+  // self-attesting custody trail rather than a second anchors table: the caller
+  // (see server.ts's prune job) queries auditPruneCandidates, emits an
+  // `audit.pruned` event THROUGH THE NORMAL AUDITOR recording {deleted, throughId,
+  // anchorHash} — so that event is itself chained and fail-closed like any other —
+  // and only THEN calls deleteAuditThrough. verifyAuditChain (above) trusts the
+  // resulting gap only when it finds that exact attesting event among the
+  // survivors.
+
+  /** Read-only prune lookup: rows with ts < cutoffIso. Null when nothing qualifies. */
+  auditPruneCandidates(cutoffIso: string): { count: number; throughId: number; anchorHash: string } | null {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count, MAX(id) AS throughId
+           FROM audit_log WHERE ts < ?`,
+      )
+      .get(cutoffIso) as { count: number; throughId: number | null };
+    if (!row.count || row.throughId == null) return null;
+    const anchor = this.db.prepare("SELECT hash FROM audit_log WHERE id = ?").get(row.throughId) as
+      | { hash: string }
+      | undefined;
+    if (!anchor) return null; // shouldn't happen — throughId came from this same table
+    return { count: row.count, throughId: row.throughId, anchorHash: anchor.hash };
+  }
+
+  /** Delete rows with id <= throughId. Returns the number of rows actually removed. */
+  deleteAuditThrough(throughId: number): number {
+    const info = this.db.prepare("DELETE FROM audit_log WHERE id <= ?").run(throughId);
+    return Number(info.changes);
   }
 
   /** Shared WHERE builder for queryAudit/countAudit — same filter semantics, one source of truth. */
