@@ -39,7 +39,7 @@ SecRouter closes both gaps in one drop-in, OpenAI-compatible gateway you host yo
 - **Live cost visibility** — `GET /v1/usage` (self) and `GET /admin/usage` (admin), plus a web console.
 
 ### 🖥️ Admin console (`/admin`)
-A dependency-free web UI (OIDC PKCE login) to **monitor** per-user/model/day usage & cost, **configure** group/user policies and tier→model routing (audited, applied live), **add local / on-prem model endpoints** with a guided wizard (test → discover models → price → set egress → validate → write the config file → reload/restart), **review** the audit trail, watch **provider health**, and export **compliance evidence**. [Light & dark themes.](#)
+A dependency-free web UI (OIDC PKCE login) to **monitor** per-user/model/day usage & cost, **configure** group/user policies and tier→model routing (audited, applied live), **add local / on-prem model endpoints** with a guided wizard (test → discover models → price → set egress → validate → write the config file → reload/restart), **review** the audit trail, watch **provider health**, and export **compliance evidence**. Light & dark themes. See [`docs/usage.md`](docs/usage.md#admin-console-admin) for the full tab-by-tab walkthrough and admin API reference.
 
 ### 🔭 Operate & prove
 - **Painless provider switching** — OpenAI-on-Bedrock (GovCloud) and Azure OpenAI both speak the OpenAI API, so moving a tier between clouds is a one-line target change. Credentials are handled per-provider: Bedrock API key / SigV4, Azure `api-key` **or** Microsoft Entra.
@@ -99,6 +99,9 @@ Start from the hardened reference config and the hardening guide:
 
 - [`secrouter.config.hardened.example.json`](secrouter.config.hardened.example.json) — full CMMC L3 config (OIDC, per-user policy/quotas, **OpenAI-on-Bedrock GovCloud + Azure OpenAI + self-hosted** egress allow-list, FIPS, audit).
 - [Deployment hardening guide](docs/compliance/deployment-hardening.md) · [CMMC control matrix](docs/compliance/cmmc-control-matrix.md).
+- [`docs/configuration.md`](docs/configuration.md) — full config field reference · [`docs/usage.md`](docs/usage.md) — API, admin console, audit trail, routing experiments · [`docs/index.md`](docs/index.md) — doc index.
+
+Deploying more than SecRouter alone (SSO, local inference, a governed chat UI)? SecRouter is one component of the **SecDeploy** suite; see [secdeploy](https://github.com/secrouter/secdeploy#the-suite) for the one-command, air-gap-friendly deployer that stands up a pinned, compatible set of them together.
 
 ```bash
 npm run test:security      # OIDC, policy/quota, egress, SigV4, metrics, resilience, Azure, MCP
@@ -107,7 +110,7 @@ npm run test:integration   # full secured pipeline + admin API (e2e)
 
 ## Configuration
 
-Config is loaded from, in order: `SECROUTER_CONFIG` env var → `./secrouter.config.json` → `~/.config/freerouter/config.json`. The `security` block is validated at startup and **fails closed** — the server refuses to boot in an unsafe configuration.
+Config is loaded from, in order: `SECROUTER_CONFIG` env var → `./secrouter.config.json` → `~/.config/secrouter/config.json` (legacy `freerouter.*` names/paths are still accepted for back-compat). The `security` block is validated at startup and **fails closed** — the server refuses to boot in an unsafe configuration. Full field-by-field reference: [`docs/configuration.md`](docs/configuration.md).
 
 ```jsonc
 {
@@ -164,33 +167,32 @@ and SecRouter auto-registers a pooled `secllm` provider — with bearer-token
 auth resolved from `SECROUTER_SECLLM_TOKEN` (the same env-based provider
 `auth` every other provider uses; unset = no `Authorization` header sent, for
 an open/unauthenticated SecLLM) — and turnkey-routes SIMPLE/MEDIUM/COMPLEX/
-REASONING (in both `tiers` and `agenticTiers`) to SecLLM's default-catalog
-friendly model ids — `secllm/fast`, `secllm/balanced`, `secllm/large`,
-`secllm/reasoning` respectively — demoting whatever was previously each
-tier's primary into that tier's fallback instead of discarding it. This intake is purely additive
-and a strict no-op the moment you take explicit ownership — either by
-defining your own `secllm` provider or routing any tier to `secllm/*`
-yourself. **It only ever wires up routing + credentials — never a network
-path**; see egress below.
+REASONING (in both `tiers` and `agenticTiers`) directly to the real SecLLM
+model name each tier defaults to — `secllm/Llama-3.2-3B-Instruct` (SIMPLE),
+`secllm/gemma-4-26B-A4B-it` (MEDIUM), `secllm/Llama-3.3-70B-Instruct`
+(COMPLEX), `secllm/gpt-oss-20b` (REASONING) — demoting whatever was
+previously each tier's primary into that tier's fallback instead of
+discarding it. This intake is purely additive and a strict no-op the moment
+you take explicit ownership — either by defining your own `secllm` provider
+or routing any tier to `secllm/*` yourself. **It only ever wires up routing +
+credentials — never a network path**; see egress below.
 
-**Custom catalog — `SECROUTER_SECLLM_MODELS`.** The tags above
-(`fast`/`balanced`/`large`/`reasoning`) are SecLLM's *default* catalog names,
-forwarded verbatim as the upstream model id. A pool serving a **different**
-catalog — e.g. an OpenAI-compatible MLX or vLLM server whose ids are
-`org/model` — would 404 those tags. Set `SECROUTER_SECLLM_MODELS` to a
-comma-separated list of `tag=modelId` pairs to remap any tag to the real id
-that pool serves, e.g.:
+**Custom catalog — `SECROUTER_SECLLM_MODELS`.** The names above are
+SecLLM's *default* catalog. A pool serving a **different** catalog — e.g. an
+OpenAI-compatible MLX or vLLM server whose ids are `org/model` — would 404
+those names. Set `SECROUTER_SECLLM_MODELS` to a comma-separated list of
+`tier=modelId` pairs (`tier` ∈ `simple`/`medium`/`complex`/`reasoning`,
+case-insensitive) to override which real model id a tier binds to, e.g.:
 
 ```
-SECROUTER_SECLLM_MODELS=fast=mlx-community/Llama-3.2-3B-Instruct-4bit,balanced=lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit
+SECROUTER_SECLLM_MODELS=simple=mlx-community/Llama-3.2-3B-Instruct-4bit,medium=lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit
 ```
 
-routes the **`balanced`** tag (the MEDIUM tier) to the 26B tool-caller and
-`fast` (SIMPLE) to the 3B; unspecified tags keep their literal default.
-Unknown tags and malformed pairs are skipped with a warning. This is the
-turnkey alternative to hand-authoring `providers.secllm` + the tier mappings
-for a custom catalog, and applies only when `SECROUTER_SECLLM_ENDPOINTS` is
-also set.
+routes the **MEDIUM** tier to the 26B tool-caller and **SIMPLE** to the 3B;
+unspecified tiers keep their default real model name. Unknown tiers and
+malformed pairs are skipped with a warning. This is the turnkey alternative
+to hand-authoring `providers.secllm` + the tier mappings for a custom
+catalog, and applies only when `SECROUTER_SECLLM_ENDPOINTS` is also set.
 
 **Egress stays explicit — `SECROUTER_EGRESS_FILE`.** The turnkey intake above
 never touches `security.egress`: under `security.enabled: true`, the
@@ -233,6 +235,29 @@ being simply unreachable (down, network partition — the per-endpoint breaker
 trips) still gracefully falls back to the demoted prior primary rather than
 hard-failing.
 
+## Routing experiments
+
+Two off-by-default, fail-loud-validated features under `experiments` in the config, for benchmarking and capacity-stretching on real traffic — see [`docs/usage.md`](docs/usage.md#routing-experiments) for the full workflow and [`docs/configuration.md`](docs/configuration.md#routing-experiments) for every field.
+
+- **Split (A/B) routing** — weighted-random-assign one of several candidate models for a tier, e.g. to compare a new model against the incumbent before promoting it. Each assignment is echoed in the `X-SecRouter-Split` response header and counted in `secrouter_split_assigned_total`.
+- **Escalation routing** — draft a response on a cheap tier, judge it (heuristically or with a model judge), and escalate *once* to a stronger tier only if the draft looks weak (empty, truncated, a refusal, or judge-rejected). Non-streaming only. Reported via `X-SecRouter-Escalation` (`accepted`/`escalated`/`escalation_denied`) and `secrouter_escalations_total`.
+
+```jsonc
+"experiments": {
+  "split": {
+    "enabled": true, "name": "sonnet-vs-candidate",
+    "tiers": { "MEDIUM": { "variants": [
+      { "model": "azure/gpt-4o", "weight": 90 },
+      { "model": "bedrock/openai.gpt-oss-120b-1:0", "weight": 10 }
+    ] } }
+  },
+  "escalation": {
+    "enabled": true, "fromTiers": ["SIMPLE"], "toTier": "MEDIUM",
+    "judge": { "mode": "heuristic", "timeoutMs": 10000 }
+  }
+}
+```
+
 ## Endpoints
 
 | Endpoint | Auth | Description |
@@ -253,7 +278,7 @@ hard-failing.
 
 ## Smart routing & overrides
 
-The classifier scores each message (length, reasoning depth, code/math complexity, domain specificity, …) and picks the cheapest capable tier. Override it inline when you know better — the prefix is stripped before forwarding:
+See [`docs/usage.md`](docs/usage.md#v1-endpoints) for the full API reference (endpoints, response headers, `/v1/usage`). The classifier scores each message (length, reasoning depth, code/math complexity, domain specificity, …) and picks the cheapest capable tier. Override it inline when you know better — the prefix is stripped before forwarding:
 
 ```
 /simple  What's 2+2?
@@ -286,7 +311,7 @@ A request is **gated** (never re-steered) when the caller pins a concrete `model
 Liveness comes from the same active `/v1/models` probe that powers multi-endpoint load balancing.
 It **auto-enables** for (a) a pooled provider (>1 endpoint), (b) any **loopback** endpoint (a local
 SecLLM at `127.0.0.1`), and (c) the self-hosted **SecLLM turnkey pool** (`SECROUTER_SECLLM_ENDPOINTS`)
-even when SecDeploy addresses it by FQDN — that pool is the deployment's own inference tier, inside
+even when [SecDeploy](https://github.com/secrouter/secdeploy) addresses it by FQDN — that pool is the deployment's own inference tier, inside
 the boundary and already egress-authorized, so keeping liveness on it is exactly what's wanted. A
 single **remote third-party** endpoint stays passive by default (no background egress); set
 `security.resilience.healthIntervalSec` to actively probe it too. Steer decisions are logged and
@@ -302,7 +327,7 @@ src/
   models.ts            Model catalog + pricing
   admin-ui.ts          Admin console SPA (served at /admin)
   metrics.ts           Prometheus registry (served at /metrics)
-  router/              Weighted classifier + tier mappings + multi-endpoint load balancing (balance.ts) + health-aware model steering (health.ts)
+  router/              Weighted classifier + tier mappings + multi-endpoint load balancing (balance.ts) + health-aware model steering (health.ts) + split A/B (split.ts) + escalation (escalation.ts) routing experiments
   security/            ← the security layer
     identity/          OIDC/JWT verification
     policy/            Per-user/group authorization
@@ -313,6 +338,7 @@ src/
     transport/         TLS/FIPS + AWS SigV4 + Azure Entra
     resilience.ts      per-endpoint circuit breaker
     mcp/               governed MCP tool gateway (deny-by-default tools)
+docs/                  configuration.md (config reference) + usage.md (API/console/audit/experiments) + index.md
 docs/compliance/       CMMC control matrix + hardening guide
 deploy/                Dockerfile, compose test stack, mocks, runbook
 test/security/         Unit + integration tests

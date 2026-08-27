@@ -2,6 +2,95 @@
 
 ## [Unreleased]
 
+### Routing experiments
+- **Split (A/B) routing.** For a request that resolves to a tier listed in `experiments.split.tiers`,
+  weighted-random-pick one of several candidate models instead of always using the tier's configured
+  primary — for benchmarking a candidate model against the incumbent (or several candidates against
+  each other) on real traffic. Each assignment is echoed in the `X-SecRouter-Split` response header,
+  the routing reasoning, and the `secrouter_split_assigned_total` metric; if health-aware steering
+  later moves the request off its assigned variant, that's counted separately in
+  `secrouter_split_steered_total` so analysis can exclude the contaminated sample. Runs before the
+  health-aware steer and before per-user policy `authorize()` — both still run afterward and may
+  override the assignment (policy always wins).
+- **Escalation routing.** Draft a response on a cheap `fromTiers` model, judge it (heuristically —
+  empty/truncated/refusal-matched/too-short — or via a model judge against a fixed rubric prompt), and
+  escalate *once* to `toTier` if the draft looks weak. Non-streaming only (the draft must be judged
+  before anything reaches the client, which is impossible once tokens are already streaming out). A
+  judge timeout, call error, or unparseable output fails **open** (accepts the draft) rather than
+  escalating; a `toTier` with no configured model, or one policy denies, also falls back to serving
+  the draft instead of hard-failing the request. Reported via `X-SecRouter-Escalation`
+  (`accepted`/`escalated`/`escalation_denied`), `secrouter_escalations_total`, and
+  `secrouter_escalation_judge_duration_seconds`.
+- Both features are off by default (`experiments.split.enabled` / `experiments.escalation.enabled`)
+  and validated fail-loud at config load/reload — an invalid `experiments` block refuses to (re)load
+  rather than silently misrouting live traffic. See `docs/usage.md#routing-experiments`.
+
+### Security & compliance
+- **Audit retention (AU 3.3.1) — `security.audit.retentionDays`.** A daily background job prunes
+  `audit_log` rows older than the configured window (default `0` = keep forever, unchanged). Pruning
+  always records a self-attesting `audit.pruned` event (deleted count, `throughId`, `anchorHash`)
+  through the normal auditor *before* deleting anything, so `verifyAuditChain`'s tamper-evidence
+  guarantee (AU 3.3.8) holds across pruning; if that custody-trail write fails, the cycle skips
+  deletion entirely and retries the next day rather than losing the trail. Surfaced in
+  `GET /admin/api/evidence`'s control self-assessment.
+- **OIDC service-account tokens — `security.oidc.serviceSubjects`.** Exempts named non-interactive
+  `sub`s from `requireMfa`/`requiredAcr` for machine clients (client-credentials grant) that can
+  never produce an MFA assertion; every other check (signature, issuer, audience, exp/nbf, algorithm,
+  jti replay) still applies in full.
+- **On-behalf-of delegation for a governed UI — `security.oidc.delegatingSubjects`.** A trusted
+  front-end service (e.g. a governed chat UI) authenticates with its own service-account token and
+  forwards the signed-in end-user's identity via a header (default `x-sec-acting-user` /
+  `x-sec-acting-groups`); SecRouter replaces the principal with that end-user for policy, budgets,
+  quotas, and the usage ledger, while recording the delegating service as `delegatedBy` in the
+  `auth.success` audit for a complete actor → subject chain.
+
+### Admin console
+- **Endpoint management, model-driven tiers, and provider health.** `GET /admin/api/models/available`
+  live-probes every configured provider; the Models tab now drives tier→model assignment off what's
+  actually reachable/serving, and an add/remove-endpoint wizard (probe → preview → apply/remove/
+  edit-egress, atomic validated writes, audited) replaces hand-editing the config file for local/
+  on-prem endpoints.
+- **Dedicated Access Log tab.** The audit trail moved out from under Monitor into its own top-level
+  tab — searchable (free text), filterable (type/outcome/principal/since), sortable, and
+  independently paginated/scrollable — backed by `GET /admin/api/audit`'s `{ rows, total }` response.
+
+### Routing
+- **Multi-endpoint / load-balanced providers.** Any provider's `baseUrl` now accepts an array of
+  URLs, round-robinned with per-endpoint circuit breaking and model-aware selection (an endpoint is
+  only offered a model its own `/v1/models` confirms serving) across replicas of the same backend
+  (e.g. a self-hosted GPU pool). `security.egress.allowlist[].allowedHost` accepts the same
+  string-or-array shape so one rule authorizes every pool host. Includes the turnkey
+  `SECROUTER_SECLLM_ENDPOINTS`/`SECROUTER_SECLLM_TOKEN` intake (routing + provider auth only — never
+  egress) and `SECROUTER_EGRESS_FILE` for deployer-generated, additively-merged egress rules
+  (audit-evident via `egress.file_loaded`, fails loud on a missing/malformed file).
+- **Real-model-name tier binding for the SecLLM turnkey pool.** `SECROUTER_SECLLM_ENDPOINTS` now
+  binds SIMPLE/MEDIUM/COMPLEX/REASONING directly to the real SecLLM model name each defaults to
+  (`Llama-3.2-3B-Instruct` / `gemma-4-26B-A4B-it` / `Llama-3.3-70B-Instruct` / `gpt-oss-20b`) rather
+  than catalog tags (`fast`/`balanced`/`large`/`reasoning`) — a clean break, since SecLLM now serves
+  models by real name rather than tag. `SECROUTER_SECLLM_MODELS` is re-keyed to match: comma-separated
+  `tier=modelId` pairs (`simple=`/`medium=`/`complex=`/`reasoning=`) instead of `tag=modelId`.
+- **Custom-catalog tier remap — `SECROUTER_SECLLM_MODELS`.** A pool serving a custom OpenAI-compatible
+  catalog (e.g. an MLX/vLLM server whose ids are `org/model`) can override any tier's bound model id
+  via `SECROUTER_SECLLM_MODELS` without hand-authoring `providers.secllm` + the tier mappings.
+  Backward-compatible (unset = the default real names), applies only alongside
+  `SECROUTER_SECLLM_ENDPOINTS`, and skips unknown tiers/malformed entries with a warning.
+- **Health-aware routing.** SecRouter now steers a non-gated request onto a model that is actually
+  **live** — learned by polling each OpenAI-compatible provider's `/v1/models` — instead of
+  forwarding to a tier's configured model that isn't loaded on any backend (which would `502`).
+  **When exactly one model is live, every non-gated request goes to it**; when several are live it
+  prefers a live model from the request's own tier chain. Explicit-model requests (`model` ≠ `auto`)
+  and policy-pinned/downgraded requests are gates and are never re-steered. Active liveness polling
+  auto-enables for a **loopback** endpoint (a local SecLLM), for pooled providers, and for the
+  self-hosted **SecLLM turnkey pool** (`SECROUTER_SECLLM_ENDPOINTS`) even when addressed by FQDN —
+  so it's turnkey for a provisioned suite. Polling those isn't egress (they're inside the boundary);
+  a single remote third-party endpoint is still opt-in via `security.resilience.healthIntervalSec`.
+
+### Changed
+- **Config file renamed** `freerouter.config.json` → `secrouter.config.json` (and env var
+  `FREEROUTER_CONFIG` → `SECROUTER_CONFIG`, `~/.config/freerouter` → `~/.config/secrouter`), aligning
+  the on-disk name with the product. Legacy names/paths are still honored so existing deploys keep
+  working through the migration — no forced cutover.
+
 ### Fixed
 - **OpenAI-path tool-calling.** `forwardToOpenAI` built the upstream request body with only
   `model`/`messages`/`stream`/`max_tokens`/`temperature`/`top_p` — it silently dropped **`tools`**,
@@ -10,31 +99,6 @@
   structured `tool_call` and agentic clients (e.g. pi) saw it narrate the tool in prose instead. The
   Anthropic path already forwarded tools; the OpenAI path now does too. Body construction is factored
   into `buildOpenAIRequestBody` with a regression test on the forwarded-field allow-list.
-
-### Routing
-- **Custom-catalog tier remap — `SECROUTER_SECLLM_MODELS`.** The turnkey SecLLM intake
-  (`SECROUTER_SECLLM_ENDPOINTS`) routes SIMPLE/MEDIUM/COMPLEX/REASONING to the default tags
-  `secllm/fast|balanced|large|reasoning`, which only exist in SecLLM's own catalog. A pool serving a
-  **custom** OpenAI-compatible catalog (e.g. an MLX/vLLM server whose ids are `org/model`) can now
-  remap each tag to its real backend model id via `SECROUTER_SECLLM_MODELS` (`tag=modelId,…`) — e.g.
-  `balanced=lmstudio-community/gemma-4-26B-A4B-it-QAT-MLX-4bit` points the MEDIUM tier at the 26B
-  tool-caller — without hand-authoring `providers.secllm` + the tier mappings. The mapping applies
-  to **both** the classifier's tiers **and** an explicit `secllm/<tag>` request: `model:
-  "secllm/balanced"` resolves to the mapped id at forward time, so a client that pins its model by
-  tag (e.g. an agent) gets the mapped model instead of a 404 on the literal tag. Backward-compatible
-  (unset = the literal tags), applies only alongside `SECROUTER_SECLLM_ENDPOINTS`, and skips
-  unknown/malformed entries with a warning.
-- **Health-aware routing.** SecRouter now steers a non-gated request onto a model that is actually
-  **live** — learned by polling each OpenAI-compatible provider's `/v1/models` — instead of
-  forwarding to a tier's configured model that isn't loaded on any backend (which would `502`).
-  **When exactly one model is live, every non-gated request goes to it**; when several are live it
-  prefers a live model from the request's own tier chain. Explicit-model requests (`model` ≠ `auto`)
-  and policy-pinned/downgraded requests are gates and are never re-steered. Active liveness polling
-  now auto-enables for a **loopback** endpoint (a local SecLLM), for pooled providers, and for the
-  self-hosted **SecLLM turnkey pool** (`SECROUTER_SECLLM_ENDPOINTS`) even when SecDeploy addresses it
-  by FQDN — so it's turnkey for a provisioned suite. Polling those isn't egress (they're inside the
-  boundary); a single remote third-party endpoint is still opt-in via
-  `security.resilience.healthIntervalSec`.
 
 ## [1.0.0] — SecRouter
 

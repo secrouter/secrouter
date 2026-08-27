@@ -193,6 +193,19 @@ export const audit = {
       ...(d.error ? { error: d.error } : {}),
     },
   }),
+  /**
+   * Audit retention prune (AU 3.3.1, `security.audit.retentionDays`). Emitted
+   * BEFORE the corresponding rows are deleted, so the chain itself attests the
+   * prune: `throughId` is the highest row id being removed, `anchorHash` is
+   * that row's own hash — i.e. the prev_hash the next surviving row already
+   * carries. verifyAuditChain (store/sqlite.ts) looks for exactly this event
+   * to trust a non-GENESIS chain start. Metadata only — no row content.
+   */
+  pruned: (deleted: number, throughId: number, anchorHash: string): AuditInput => ({
+    type: "audit.pruned",
+    outcome: "ok",
+    detail: { deleted, throughId, anchorHash },
+  }),
   /** An MCP tool call refused by policy or the classification gate (Phase D). */
   toolDeny: (
     principalId: string,

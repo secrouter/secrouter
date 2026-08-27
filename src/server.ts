@@ -14,6 +14,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { route, getFallbackChain, type Tier } from "./router/index.js";
 import { getRoutingConfig, validateExperimentsConfig } from "./router/config.js";
 import { selectEndpoints, type CursorState } from "./router/balance.js";
@@ -76,6 +77,7 @@ import {
   createHttpsServer,
   audit,
 } from "./security/index.js";
+import { runAuditPrune, retentionEnabled } from "./security/audit/retention.js";
 import type { Principal, UsageResult, OverrideScope, AuditFilter, AuditSortColumn } from "./security/types.js";
 import { ADMIN_HTML } from "./admin-ui.js";
 import {
@@ -143,6 +145,17 @@ function recordUsageAndAudit(ctx: Ctx, tier: string, usage: UsageResult, outcome
 
 /** Single-request token count above which a request is flagged as anomalous. */
 const ANOMALY_TOKEN_THRESHOLD = parseInt(process.env.SECROUTER_ANOMALY_TOKENS ?? "300000", 10);
+
+// The one version every surface reports (/health, evidence bundle) — read from package.json so
+// it can't drift from the release the way a hardcoded literal did (caught reporting 1.1.0 while
+// package.json said 1.0.0).
+const PKG_VERSION: string = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+})();
 
 // ── Provider circuit breaker (Tier 1 Phase C / SC 3.13.x availability) ──
 // One process-wide breaker, keyed per (provider, endpoint). Configured from
@@ -307,6 +320,28 @@ function startHealthChecks(): void {
   );
 }
 
+// ── Audit retention prune (optional; security.audit.retentionDays — AU 3.3.1) ──
+// Off by default (retentionDays 0/unset = keep forever, today's behavior). The
+// actual prune logic (candidate lookup → custody-trail audit event → delete)
+// lives in security/audit/retention.ts, where it's unit-tested without a
+// running server; this is just the timer wrapper, mirroring startHealthChecks.
+let auditPruneTimer: ReturnType<typeof setInterval> | undefined;
+const AUDIT_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000; // daily
+
+/** (Re)start the audit-prune timer to match the current security.audit.retentionDays. */
+function startAuditPrune(): void {
+  if (auditPruneTimer) {
+    clearInterval(auditPruneTimer);
+    auditPruneTimer = undefined;
+  }
+  if (!securityEnabled()) return;
+  const retentionDays = getSecurityConfig()?.audit?.retentionDays;
+  if (!retentionEnabled(retentionDays)) return; // default: no prune job at all
+  auditPruneTimer = setInterval(() => runAuditPrune(getStore(), getAuditor(), retentionDays), AUDIT_PRUNE_INTERVAL_MS);
+  auditPruneTimer.unref?.(); // don't keep the process alive for the timer
+  logger.info(`🗓 Audit retention enabled: pruning audit_log rows older than ${retentionDays}d, daily`);
+}
+
 // Load config at startup. loadConfig() throws if SECROUTER_EGRESS_FILE is set
 // but missing/unreadable/malformed (config.ts applyEgressFileIntake — a
 // security control fails loud, never silently continues), so this is a
@@ -347,6 +382,7 @@ initSecurity(appConfig.security);
 emitPendingEgressFileAudit(); // audit-evident (not silent) if SECROUTER_EGRESS_FILE loaded rules above
 breaker.setConfig(resolveResilience(appConfig.security?.resilience));
 startHealthChecks();
+startAuditPrune();
 
 const PORT = parseInt(process.env.SECROUTER_PORT ?? String(appConfig.port), 10);
 const HOST = process.env.SECROUTER_HOST ?? appConfig.host ?? "127.0.0.1";
@@ -1370,7 +1406,7 @@ function handleHealth(_req: IncomingMessage, res: ServerResponse) {
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({
     status: "ok",
-    version: "1.1.0",
+    version: PKG_VERSION,
     uptime: process.uptime(),
     security: securityEnabled() ? "enabled" : "disabled",
   }));
@@ -1440,6 +1476,7 @@ function handleReloadConfig(_req: IncomingMessage, res: ServerResponse) {
   emitPendingEgressFileAudit(); // audit-evident (not silent) if SECROUTER_EGRESS_FILE loaded rules above
   breaker.setConfig(resolveResilience(newCfg.security?.resilience));
   startHealthChecks(); // reflect any healthIntervalSec change
+  startAuditPrune(); // reflect any retentionDays change
   const cfg = getConfig();
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({
@@ -1966,6 +2003,11 @@ function buildControlSelfAssessment(
       evidence: "auditRecent[] — per-principal, metadata-only (CUI-safe)",
       status: "active",
     },
+    "AU-3.3.1 (audit record retention)": {
+      evidence: "config.security.audit.retentionDays + daily prune job + self-attesting audit.pruned custody trail",
+      retentionDays: sec?.audit?.retentionDays ?? 0,
+      status: (sec?.audit?.retentionDays ?? 0) > 0 ? `pruned after ${sec!.audit!.retentionDays}d` : "retained indefinitely (no retention configured)",
+    },
     "AU-3.3.8 (audit tamper-evidence)": {
       evidence: "auditChain — SHA-256 hash-chain verification",
       verified: chain.ok,
@@ -1999,11 +2041,11 @@ function handleEvidence(res: ServerResponse, ctx: Ctx) {
   const today = new Date().toISOString().slice(0, 10);
   const bundle = {
     product: "SecRouter",
-    version: "1.1.0",
+    version: PKG_VERSION,
     generatedAt: new Date().toISOString(),
     generatedBy: ctx.principal!.id,
     configPath: getConfigPath(),
-    health: { status: "ok", version: "1.1.0", uptime: process.uptime(), security: securityEnabled() ? "enabled" : "disabled" },
+    health: { status: "ok", version: PKG_VERSION, uptime: process.uptime(), security: securityEnabled() ? "enabled" : "disabled" },
     fips: { required: sec?.requireFips === true, active: isFipsEnabled() },
     config: getSanitizedConfig(), // baseline (AC/SC/CM) — secrets redacted
     auditChain: { ...chain, ts: new Date().toISOString() }, // AU 3.3.8

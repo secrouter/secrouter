@@ -291,7 +291,7 @@ export type McpServerConfig = {
 // ─── Audit (Feature 3) ───
 
 export type AuditInput = {
-  type: string; // auth.success | auth.failure | authz.deny | authz.downgrade | route.decision | egress.deny | egress.file_loaded | usage | admin.action | config.reload | provider.circuit | tool.call | tool.deny | error | anomaly
+  type: string; // auth.success | auth.failure | authz.deny | authz.downgrade | route.decision | egress.deny | egress.file_loaded | usage | admin.action | config.reload | provider.circuit | tool.call | tool.deny | audit.pruned | error | anomaly
   requestId?: string;
   principalId?: string;
   sourceIp?: string;
@@ -380,6 +380,14 @@ export interface Store {
   /** Total rows matching the same filter (ignoring limit/offset/sort) — drives access-log paging. */
   countAudit(filter: AuditFilter): number;
 
+  // Audit retention (AU 3.3.1) — read-then-emit-then-delete, split so the caller can
+  // record the custody-trail event (via the normal Auditor) BEFORE any row is removed.
+  /** Read-only: rows with ts < cutoffIso. Null when there is nothing to prune. */
+  auditPruneCandidates(cutoffIso: string): { count: number; throughId: number; anchorHash: string } | null;
+  /** Delete rows with id <= throughId. Call only after the audit.pruned event that
+   *  attests this deletion has been durably appended. Returns rows actually deleted. */
+  deleteAuditThrough(throughId: number): number;
+
   // Replay cache (IA 3.5.4)
   recordJtiIfNew(jti: string, expEpochSec: number): boolean; // true = new, false = replay
   purgeExpiredJti(nowEpochSec: number): void;
@@ -411,6 +419,16 @@ export type SecurityConfig = {
     /** Fail the request if the audit write fails (AU 3.3.4). Default true. */
     failClosed?: boolean;
     syslog?: { host: string; port: number; protocol?: "udp" | "tcp"; format?: "cef" | "json" };
+    /**
+     * Days to retain audit_log rows before a daily background job prunes them
+     * (AU 3.3.1). Default 0 = keep forever (today's behavior, unchanged).
+     * Pruning never breaks tamper-evidence: before any row is deleted, the
+     * prune records a self-attesting `audit.pruned` event (deleted count,
+     * `throughId`, `anchorHash` of the last row being removed) through the
+     * normal Auditor — see sqlite.ts `verifyAuditChain` for how that anchor
+     * is trusted on verify.
+     */
+    retentionDays?: number;
   };
   /** Prometheus /metrics endpoint. Off unless enabled; guard with a static bearer or network placement. */
   metrics?: { enabled: boolean; bearerEnvKey?: string };

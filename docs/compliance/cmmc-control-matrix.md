@@ -21,7 +21,7 @@ Status legend: ✅ enforced in code · ⚙️ configurable · 🤝 shared (needs
 
 | Control | Requirement | Implementation | Evidence |
 |---|---|---|---|
-| 3.3.1 | Create & retain audit records | Structured events for auth, authz, routing, egress, usage, admin, quota, anomaly, errors | `src/security/audit/audit.ts`, `store/sqlite.ts` |
+| 3.3.1 | Create & retain audit records | Structured events for auth, authz, routing, egress, usage, admin, quota, anomaly, errors. Retention is configurable (`security.audit.retentionDays`, default 0 = keep forever); a daily job prunes rows past the window and records a self-attesting `audit.pruned` event (deleted count, `throughId`, `anchorHash`) *before* deleting, so the hash chain's tamper-evidence survives pruning | `src/security/audit/audit.ts`, `store/sqlite.ts` (`auditPruneCandidates`, `deleteAuditThrough`, `verifyAuditChain`), `src/server.ts` (`startAuditPrune`) |
 | 3.3.2 | Trace actions to individual users | Every event carries `principalId` (OIDC `sub`), `requestId`, `sourceIp` | `audit.ts` event builders |
 | 3.3.4 | Alert on audit failure | Fail‑closed auditor: request rejected if the audit write fails | `Auditor.emit` (`failClosed`) |
 | 3.3.5 | Correlate audit review | Per‑request UUID correlates routing → usage; `/admin/usage` rollups | `server.ts` (`X-Request-Id`), `handleUsageAdmin` |
@@ -75,7 +75,7 @@ SecRouter enforces the application layer. The accreditation boundary must also p
 - **Enclave / network** (3.13.1/3.1.x): run in AWS GovCloud IL4‑5 or an air‑gapped enclave; host‑based firewall; segmentation.
 - **FIPS module** (3.13.11): a Node build linked to a CMVP‑validated OpenSSL FIPS provider, **or** a FIPS‑validated TLS front end (recommended) — then set `tls.mode="frontend"`.
 - **IdP** (3.5.3): enterprise OIDC IdP (Keycloak/Okta/Entra/Ping) backed by your LDAP/AD, enforcing MFA/CAC and emitting `amr`/`acr`/`groups`.
-- **NTP** (3.3.7), **log retention/review** (3.3.x), **SIEM** (point `audit.syslog` at it), **vuln mgmt / SBOM** (3.14.1), **incident response** (DFARS 7012 72‑hr reporting), **media protection** (encrypt `storePath` volume at rest).
+- **NTP** (3.3.7), **audit record retention** (3.3.1 — implemented in-app via `security.audit.retentionDays` + the daily prune job; the enclave still owns long-term/legal-hold archival beyond what the local store retains, e.g. exporting via `audit.syslog` to a SIEM before the window expires), **log review** (3.3.x), **SIEM** (point `audit.syslog` at it), **vuln mgmt / SBOM** (3.14.1), **incident response** (DFARS 7012 72‑hr reporting), **media protection** (encrypt `storePath` volume at rest).
 
 ## Verification
 
